@@ -1,7 +1,7 @@
 ---
 title: "Non-Blocking Requests with send_async and RequestHandle"
 sidebarTitle: "Async Requests"
-description: "Use send_async() to fire off requests without blocking the calling thread. RequestHandle lets you poll, await, cancel, and chain callbacks on every in-flight request."
+description: "Use send_async() to fire off requests without blocking. RequestHandle lets you poll, cancel, and chain callbacks on every in-flight request."
 ---
 
 `send()` with `wait_response=True` blocks the calling thread until the server replies or the timeout expires. `send_async()` returns a `RequestHandle` immediately — the calling thread is free to do other work while the reply travels over the wire. Both client and server support the async pattern.
@@ -17,7 +17,7 @@ Every `send_async()` call returns a `RequestHandle`. The handle exposes a small 
 | `exception(timeout=None)` | Like `result()` but returns the exception instead of raising it. |
 | `cancel()` | Cancel the request and remove it from `pending_responses`. Returns `True` if the cancel succeeded. |
 | `cancelled()` | Returns `True` if the request was cancelled. |
-| `add_done_callback(fn)` | Register a callable that receives the handle when it completes, errors, or is cancelled. |
+| `add_done_callback(fn)` | Register a callable invoked with the completed `concurrent.futures.Future` when it completes, errors, or is cancelled. |
 | `data_id` | The UUID string that identifies this request in the protocol. |
 
 ## Basic Usage
@@ -59,16 +59,16 @@ The `timeout` passed to `send_async()` is the overall deadline for the request t
 
 ## Callbacks
 
-Register a done callback to be notified when the request completes, without polling:
+Register a done callback to be notified when the request completes, without polling. The callback receives the completed `concurrent.futures.Future` as its only argument — call `.result()`, `.exception()`, or `.cancelled()` on it directly:
 
 ```python
-def on_reply(handle):
-    if handle.cancelled():
+def on_reply(future):
+    if future.cancelled():
         print("Request was cancelled")
-    elif handle.exception() is not None:
-        print(f"Request failed: {handle.exception()}")
+    elif future.exception() is not None:
+        print(f"Request failed: {future.exception()}")
     else:
-        print(f"Reply: {handle.result().data}")
+        print(f"Reply: {future.result().data}")
 
 request = client.send_async("Hello!", path="echo")
 request.add_done_callback(on_reply)
@@ -109,9 +109,9 @@ def on_connect(data):
         timeout=5.0,
     )
 
-    def on_ack(handle):
-        if not handle.cancelled() and handle.exception() is None:
-            print(f"Client acknowledged: {handle.result().data}")
+    def on_ack(future):
+        if not future.cancelled() and future.exception() is None:
+            print(f"Client acknowledged: {future.result().data}")
 
     request.add_done_callback(on_ack)
 ```

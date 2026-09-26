@@ -12,25 +12,25 @@ SocketFlow is a high-performance TCP networking library for Python that runs ent
   <Card title="Zero Dependencies" icon="box" href="/installation">
     Runs entirely on Python's standard library. Installing SocketFlow never pulls in anything else.
   </Card>
-  <Card title="Bidirectional Keepalive" icon="heart-pulse" href="/quickstart">
+  <Card title="Bidirectional Keepalive" icon="heart-pulse" href="/concepts/server">
     Both client and server independently monitor connection health with configurable ping/pong intervals and OS-level TCP keepalive.
   </Card>
-  <Card title="Path-Based Routing" icon="route" href="/quickstart">
+  <Card title="Path-Based Routing" icon="route" href="/concepts/events-and-routing">
     Route messages to dedicated handler functions using URL-style paths, just like a web framework — on both server and client.
   </Card>
-  <Card title="Blueprint System" icon="layer-group" href="/quickstart">
+  <Card title="Blueprint System" icon="layer-group" href="/concepts/blueprints">
     Organise handlers into reusable `Blueprint` objects and register them on any server or client, keeping large codebases modular.
   </Card>
-  <Card title="TLS and Mutual TLS" icon="lock" href="/quickstart">
+  <Card title="TLS and Mutual TLS" icon="lock" href="/guides/tls">
     Encrypt connections with TLS 1.2+ and optionally require client certificates for full mutual authentication (mTLS).
   </Card>
-  <Card title="Token and Password Auth" icon="key" href="/quickstart">
+  <Card title="Token and Password Auth" icon="key" href="/guides/authentication">
     Protect every connection with a shared token or username/password pair. Authentication runs before any application message is accepted.
   </Card>
-  <Card title="Compression" icon="file-zipper" href="/installation">
+  <Card title="Compression" icon="file-zipper" href="/guides/compression">
     Built-in zlib, lzma, bz2, and gzip codecs, plus optional zstandard and Brotli via extras. The compressor negotiates transparently.
   </Card>
-  <Card title="Async Requests and Metrics" icon="chart-line" href="/quickstart">
+  <Card title="Async Requests and Metrics" icon="chart-line" href="/guides/async-requests">
     Non-blocking `send_async` returns a `RequestHandle` immediately. Per-server and per-client `MetricsRegistry` exports Prometheus-compatible text.
   </Card>
 </CardGroup>
@@ -39,7 +39,7 @@ SocketFlow is a high-performance TCP networking library for Python that runs ent
 
 SocketFlow is built around four cooperating objects:
 
-**`TcpServer`** binds to a TCP port, accepts connections up to a configurable `max_connections` limit, and manages a bounded worker pool for dispatching inbound messages to your handler functions. It emits lifecycle events (`SERVER_START`, `CLIENT_CONNECT`, `CLIENT_DISCONNECT`, and so on) and exposes methods like `send_client`, `drain`, and `shutdown` for controlled teardown.
+**`TcpServer`** binds to a TCP port, accepts connections up to a configurable `max_connections` limit, and manages a bounded worker pool for dispatching inbound messages to your handler functions. It emits lifecycle events (`EventType.Server.START`, `EventType.Server.CLIENT_CONNECT`, `EventType.Server.CLIENT_DISCONNECT`, and so on) and exposes methods like `send_client`, `drain`, and `shutdown` for controlled teardown.
 
 **`TcpClient`** opens a single TCP connection to a server, runs a background reader thread, and provides `send` and `send_async` for outbound messages. On connect it completes a security handshake automatically, handling TLS wrapping and authentication before your code ever sees the socket.
 

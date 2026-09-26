@@ -108,14 +108,15 @@ client.disconnect()
   </Step>
 </Steps>
 
-## Timeout Parameters
+## Timeout and Handshake Parameters
 
-Two timeouts govern how long the handshake phase is allowed to take:
+Three parameters govern how long the handshake phase is allowed to take and whether it is required:
 
 | Parameter | Default | Description |
 |---|---|---|
 | `auth_timeout` | `30.0` s | How long the server waits for the client's `__auth__` frame after the connection is established. |
 | `handshake_timeout` | `None` (falls back to `auth_timeout`) | Total wall-clock budget for the entire TLS + server-ready + auth sequence. |
+| `require_handshake` | `True` | When `True`, the client blocks in `connect()` until the server sends `__handshake_ok__`. Set to `False` only when connecting to a server that does not enforce the handshake. |
 
 ```python
 server = TcpServer(

@@ -223,7 +223,7 @@ Because `disconnect()` leaves the `EventDispatcher` alive and resets only the tr
 ```python
 import time
 from socketflow import TcpClient
-from socketflow.global_side.exceptions import ExceptionType
+from socketflow import ExceptionType
 
 client = TcpClient(host="127.0.0.1", port=8080)
 
@@ -274,6 +274,29 @@ client = TcpClient(
 ```
 
 When the budget is exhausted, new inbound data is back-pressured and a `Backpressure` error is emitted. Increase `max_memory_bytes` if you are processing large messages or see unexpected disconnections under load.
+
+## Inspecting Connection State
+
+`TcpClient` exposes several read-only properties for introspecting the current connection.
+
+| Property | Type | Description |
+|---|---|---|
+| `is_connected()` | `bool` | Returns `True` while the underlying socket is open and the reader thread is running. |
+| `handshake_completed` | `bool` | `True` once the server has confirmed the protocol handshake. Always `False` before `connect()` and reset to `False` on each new `connect()` call. |
+| `negotiated_protocol_version` | `int \| None` | The protocol version agreed with the server after version negotiation, or `None` if protocol negotiation is not enabled or the connection has not yet completed. |
+
+```python
+client.connect()
+
+# Check liveness
+print(client.is_connected())               # True
+
+# Confirm handshake finished
+print(client.handshake_completed)          # True
+
+# Inspect the agreed protocol version (None if negotiation disabled)
+print(client.negotiated_protocol_version)  # e.g. 2, or None
+```
 
 ## Disconnect vs Shutdown
 

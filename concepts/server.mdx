@@ -152,7 +152,26 @@ if server.is_connected(client_addr):
 
 # Forcefully drop a client
 server.disconnect_client(client_addr)
+
+# Read memory usage
+print(server.memory_used)   # bytes currently reserved
+print(server.memory_limit)  # max_memory_bytes value
 ```
+
+### Memory limits
+
+`max_memory_bytes` (default `256 MB`) caps the total RAM the server may use for inbound receive buffers and outbound write queues across all connected clients. `max_decompressed_size` (default `16 MB`) limits how large any single compressed frame may expand to after decompression.
+
+```python
+server = TcpServer(
+    host="0.0.0.0",
+    port=8080,
+    max_memory_bytes=512 * 1024 * 1024,      # 512 MB total budget
+    max_decompressed_size=32 * 1024 * 1024,  # 32 MB per frame
+)
+```
+
+When the shared budget is exhausted, new inbound data is back-pressured and a `Backpressure` error is emitted on `EventType.Global.ERROR`.
 
 ## Handler Registration
 
@@ -307,8 +326,11 @@ server = TcpServer(
   # ... later ...
   server.start()   # valid
 
+  # Calling start() while the server is already running raises NotConnected
+  server.start()   # raises ExceptionType.NotConnected
+
   # Permanent — dispatcher is destroyed
   server.shutdown()
-  server.start()   # raises an error
+  server.start()   # raises DispatcherError (dispatcher is shut down)
   ```
 </Note>

@@ -1,5 +1,5 @@
 ---
-title: "TcpClient API Reference"
+title: "TcpClient Class Reference — SocketFlow TCP Networking"
 sidebarTitle: "TcpClient"
 description: "Complete API reference for TcpClient — SocketFlow's zero-dependency TCP client with TLS, mutual auth, compression, keepalive, and path-based routing."
 ---
@@ -47,6 +47,10 @@ description: "Complete API reference for TcpClient — SocketFlow's zero-depende
 </ParamField>
 
 ### Buffers and Limits
+
+<ParamField path="flow_control" type="bool" required={false}>
+  Enable outbound flow control. When `True`, sending while the outbound queue is full raises `Backpressure` instead of silently dropping frames. Default: `True`.
+</ParamField>
 
 <ParamField path="recv_buffer_size" type="int" required={false}>
   OS-level receive socket buffer size in bytes. Default: `65536`.
@@ -356,8 +360,7 @@ def handshake_completed(self) -> bool
 ### `metrics`
 
 ```python
-@property
-def metrics(self) -> MetricsRegistry
+metrics: MetricsRegistry
 ```
 
 The `MetricsRegistry` instance recording this client's counters, gauges, and histograms.

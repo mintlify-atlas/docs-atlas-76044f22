@@ -76,11 +76,14 @@ from socketflow import TcpServer, TcpClient, Blueprint
 print("SocketFlow is installed correctly.")
 ```
 
-You can also check the installed version:
+You can also check the installed version and the current protocol version constants:
 
 ```python
 import socketflow
-print(socketflow.__version__)  # e.g. 0.9.1
+print(socketflow.__version__)          # e.g. 0.9.1
+print(socketflow.PROTOCOL_VERSION)     # current protocol version (e.g. 1)
+print(socketflow.MIN_PROTOCOL_VERSION) # minimum supported protocol version
+print(socketflow.MAX_PROTOCOL_VERSION) # maximum supported protocol version
 ```
 
 ## Check Available Compression Methods

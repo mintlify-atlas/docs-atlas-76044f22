@@ -1,7 +1,7 @@
 ---
-title: "Compress TCP Payloads with Built-in Codecs"
+title: "Reduce TCP Payload Size with SocketFlow Compression"
 sidebarTitle: "Compression"
-description: "SocketFlow compresses all messages by default using zlib. Choose from six codecs, install optional extras for zstd or brotli, and tune decompression limits."
+description: "SocketFlow compresses messages by default using zlib. Choose from six codecs, install optional extras for zstd or brotli, and tune decompression limits."
 ---
 
 SocketFlow compresses all messages by default using zlib. Every outbound payload is compressed before it leaves the wire and decompressed automatically on receipt — your application code sends and receives ordinary Python objects with no manual compression steps. Six codecs are available, four of which ship with Python's standard library and require no extra installation.
@@ -29,7 +29,7 @@ pip install socketflow[all]       # adds both
 
 If you request a codec that is not installed, SocketFlow raises a clear error telling you exactly what to run:
 
-```
+```text
 Compression method 'zstd' is not available because 'zstandard' is not
 installed. Install it with 'pip install socketflow[zstd]', or choose one of:
 lzma, bz2, zlib, gzip.

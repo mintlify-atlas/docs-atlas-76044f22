@@ -1,5 +1,5 @@
 ---
-title: "SocketFlow Exceptions Reference"
+title: "SocketFlow Exceptions: Complete Reference and Hierarchy"
 sidebarTitle: "Exceptions"
 description: "Every exception SocketFlow can raise, when it is raised, how to handle it, and try/except examples for the most commonly caught types."
 ---
@@ -32,7 +32,7 @@ from socketflow import (
 
 ## Exception Hierarchy
 
-```
+```text
 SocketFlowException
 ├── NotConnected
 ├── NoResponse
@@ -41,7 +41,7 @@ SocketFlowException
 ├── KeepaliveTimeout
 ├── InvalidData
 ├── ProtocolError
-│   └── ProtocolVersionError
+├── ProtocolVersionError
 ├── ServerError
 ├── ClientError
 ├── BlueprintError
@@ -129,6 +129,10 @@ except ConnectionTimeout:
 
 **What to do:** Inspect the exception message for details. Check network connectivity and server availability.
 
+<Note>
+`ConnectionError` is part of the `ExceptionType` namespace but is **not exported directly** from the `socketflow` package. Access it as `ExceptionType.ConnectionError` rather than importing it by name.
+</Note>
+
 ---
 
 ### `KeepaliveTimeout`
@@ -157,7 +161,7 @@ except ConnectionTimeout:
 
 ### `ProtocolVersionError`
 
-*Inherits from `ProtocolError`.*
+*Inherits from `SocketFlowException`.*
 
 **Raised when:** The client and server negotiate protocol versions and discover there is no overlap between their supported ranges. The connection is refused before any application traffic is exchanged.
 

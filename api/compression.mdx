@@ -71,6 +71,12 @@ Serializes `obj` to bytes and compresses the result. The output is self-describi
   codec-dependent (see the table above).
 </ParamField>
 
+<ParamField body="pickle_protocol" type="int" default="pickle.HIGHEST_PROTOCOL">
+  The pickle protocol version to use when `allow_pickle=True`. Defaults to
+  `pickle.HIGHEST_PROTOCOL` for maximum compatibility with the running Python version.
+  Ignored when `allow_pickle=False`.
+</ParamField>
+
 <ParamField body="allow_pickle" type="bool" default="false">
   When `False` (the default), the object is serialized with safe JSON. When `True`,
   Python's `pickle` module is used instead, which can represent arbitrary Python objects
@@ -161,7 +167,7 @@ print(len(original))  # 10000
 
 By default `compress()` uses **safe JSON serialization**, not pickle. The wire payload is:
 
-```
+```text
 <codec>:<SAFE_PAYLOAD_MARKER><json-bytes>
 ```
 

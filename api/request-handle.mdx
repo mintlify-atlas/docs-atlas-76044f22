@@ -1,5 +1,5 @@
 ---
-title: "RequestHandle API Reference"
+title: "RequestHandle Reference — SocketFlow Async Requests"
 sidebarTitle: "RequestHandle"
 description: "Complete API reference for RequestHandle — SocketFlow's future-like object returned by send_async() and send_client_async() for non-blocking requests."
 ---
@@ -149,25 +149,27 @@ Return `True` if `cancel()` was called and the cancellation was accepted by the 
 ### `add_done_callback(fn)`
 
 ```python
-def add_done_callback(self, fn: Callable[["RequestHandle"], None]) -> None
+def add_done_callback(self, fn: Callable[[concurrent.futures.Future], None]) -> None
 ```
 
-Register a callback to be invoked when the handle settles. The callback receives the `RequestHandle` itself as its only argument and is called in the thread that settles the future (the reader thread or the timeout thread). If the handle is already done when this is called, the callback fires immediately in the calling thread.
+Register a callback to be invoked when the handle settles. This method delegates directly to the underlying `concurrent.futures.Future`, so the callback receives the **`Future` object**, not the `RequestHandle`. The callback is called in the thread that settles the future (the reader thread or the timeout thread). If the handle is already done when this is called, the callback fires immediately in the calling thread.
 
 | Parameter | Type | Description |
 |---|---|---|
-| `fn` | `callable` | A function that accepts one `RequestHandle` argument. |
+| `fn` | `callable` | A function that accepts one `concurrent.futures.Future` argument. |
 
 ```python
-def on_reply(handle):
-    if handle.cancelled():
+import concurrent.futures
+
+def on_reply(future):
+    if future.cancelled():
         print("Request was cancelled")
     else:
-        exc = handle.exception()
+        exc = future.exception()
         if exc:
             print(f"Request failed: {exc}")
         else:
-            print("Reply:", handle.result().data)
+            print("Reply:", future.result().data)
 
 handle = client.send_async({"action": "subscribe"}, path="/sub", timeout=10.0)
 handle.add_done_callback(on_reply)
@@ -176,9 +178,11 @@ handle.add_done_callback(on_reply)
 ```
 
 <Warning>
-  Do not call blocking operations (including `result()` with `timeout=None`) inside a
-  done callback — the callback runs in the I/O thread and blocking it will stall
-  message processing for the entire connection.
+  The callback argument is a `concurrent.futures.Future`, not a `RequestHandle`. This
+  is because `add_done_callback` delegates directly to the underlying future. Do not
+  call blocking operations (including `result()` with `timeout=None`) inside a done
+  callback — the callback runs in the I/O thread and blocking it will stall message
+  processing for the entire connection.
 </Warning>
 
 ---
@@ -248,9 +252,10 @@ client.connect()
 
 results = []
 
-def on_done(handle):
-    if not handle.cancelled() and not handle.exception():
-        results.append(handle.result().data)
+def on_done(future):
+    # NOTE: add_done_callback receives a concurrent.futures.Future, not a RequestHandle
+    if not future.cancelled() and not future.exception():
+        results.append(future.result().data)
 
 for i in range(10):
     h = client.send_async({"index": i}, path="/process", timeout=10.0)

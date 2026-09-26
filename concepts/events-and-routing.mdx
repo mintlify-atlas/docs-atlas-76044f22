@@ -1,5 +1,5 @@
 ---
-title: "Events and Path-Based Routing in SocketFlow"
+title: "SocketFlow Events, Path Routing, and the Dispatcher"
 sidebarTitle: "Events & Routing"
 description: "Explore SocketFlow's event system and path-based routing — how to register handlers, use middleware, tune the dispatcher, and handle every event type."
 ---
@@ -45,7 +45,7 @@ Multiple handlers may be registered for the same event — all are called in reg
     | `EventType.Server.DRAINING` | `"server.draining"` | `ServerDrainData(host, port, connected_clients, reason)` | `drain()` begins — new connections are now refused |
     | `EventType.Server.CLIENT_CONNECT` | `"server.client_connect"` | `ClientConnectData(client_addr, transport, client_identity)` | A client completes the handshake |
     | `EventType.Server.CLIENT_DISCONNECT` | `"server.client_disconnect"` | `ClientDisconnectData(client_addr, transport, client_identity)` | A client's connection is lost |
-    | `EventType.Server.MESSAGE` | `"server.message"` | `MessageReceivedData(data, client_addr, data_id, direct_response, client_identity)` | A message arrives with no matching path handler |
+    | `EventType.Server.MESSAGE` | `"server.message"` | `MessageReceivedData(data, client_addr, data_id, params, direct_response, client_identity)` | A message arrives with no matching path handler |
 
     ```python
     from socketflow import EventType
@@ -79,7 +79,7 @@ Multiple handlers may be registered for the same event — all are called in reg
     |---|---|---|---|
     | `EventType.Client.CONNECT` | `"client.connect"` | `ConnectData(server_addr, transport)` | `connect()` completes the handshake |
     | `EventType.Client.DISCONNECT` | `"client.disconnect"` | `DisconnectData(server_addr, transport)` | The connection to the server is lost |
-    | `EventType.Client.MESSAGE` | `"client.message"` | `MessageReceivedData(data, server_addr, data_id, direct_response)` | A message arrives with no matching path handler |
+    | `EventType.Client.MESSAGE` | `"client.message"` | `MessageReceivedData(data, server_addr, data_id, params, direct_response)` | A message arrives with no matching path handler |
 
     ```python
     from socketflow import TcpClient, EventType

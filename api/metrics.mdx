@@ -1,5 +1,5 @@
 ---
-title: "MetricsRegistry: Built-in Prometheus Metrics"
+title: "MetricsRegistry: Counters, Gauges, and Prometheus Export"
 sidebarTitle: "MetricsRegistry"
 description: "Record and export counters, gauges, and histograms with MetricsRegistry — built-in Prometheus text export and a JSON snapshot for dashboards."
 ---
@@ -200,7 +200,7 @@ Series without labels use the empty string `""` as their key. Series with labels
 
 Renders all metrics in the [Prometheus text exposition format](https://prometheus.io/docs/instrumenting/exposition_formats/). Each metric family is preceded by `# HELP` (if described) and `# TYPE` comment lines.
 
-```
+```text
 # TYPE socketflow_connections_accepted_total counter
 socketflow_connections_accepted_total 12
 # TYPE socketflow_connections_active gauge
@@ -282,7 +282,7 @@ scrape_configs:
 
 Example scraped output:
 
-```
+```text
 socketflow_connections_accepted_total 1
 socketflow_connections_active 1
 socketflow_messages_received_total{path="echo"} 4

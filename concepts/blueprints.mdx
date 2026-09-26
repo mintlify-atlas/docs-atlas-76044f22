@@ -1,7 +1,7 @@
 ---
-title: "Blueprints: Modular Message Handler Organization"
+title: "Blueprints: Modular Handler Organization in SocketFlow"
 sidebarTitle: "Blueprints"
-description: "Use SocketFlow Blueprints to split message handlers into focused, reusable modules — inspired by Flask blueprints — and register them with any server or client."
+description: "Group related event and path handlers into Blueprint modules, then register them with a server or client to keep your application modular."
 ---
 
 As a SocketFlow application grows, keeping all event and path handlers in a single file becomes hard to navigate. Blueprints solve this by letting you group related handlers into a self-contained module, then register the whole module with a server or client in one line. The concept is directly inspired by Flask's blueprint system: define handlers in isolation, register them where needed, and keep each part of your application focused on a single responsibility.
@@ -134,7 +134,7 @@ if user_bp.is_connected(client_addr):
     user_bp.send_client(client_addr, {"ping": True})
 ```
 
-Calling `is_connected()` on a server-side blueprint without a `client_addr` raises a `BlueprintError`.
+Calling `is_connected()` on a server-side blueprint without a `client_addr` raises a `BlueprintError`. Calling it on a blueprint that has not yet been registered with any server or client also raises a `BlueprintError`.
 
 ## Complete Example
 

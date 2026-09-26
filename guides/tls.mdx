@@ -1,5 +1,5 @@
 ---
-title: "Secure Connections with TLS and Mutual TLS"
+title: "Encrypt SocketFlow TCP Connections with TLS and mTLS"
 sidebarTitle: "TLS"
 description: "Encrypt SocketFlow TCP connections with one-way TLS or mutual TLS, verify client certificates, and retrieve the authenticated client identity."
 ---
@@ -49,7 +49,7 @@ client.disconnect()
 </CodeGroup>
 
 <Note>
-`tls_certfile` and `tls_keyfile` are both required on the server when `tls_enabled=True`. Providing only one raises a `ValueError` at construction time. Likewise, `tls_certfile` and `tls_keyfile` must be provided together on the client side when using mTLS.
+`tls_certfile` and `tls_keyfile` are both required on the server when `tls_enabled=True`. Providing only one raises a `ValueError` at construction time. Likewise, `tls_certfile` and `tls_keyfile` must be provided together on the client side when using mTLS. Additionally, setting `tls_require_client_cert=True` requires `tls_client_ca` to also be set — omitting `tls_client_ca` raises a `ValueError`.
 </Note>
 
 ## Mutual TLS (mTLS)

@@ -1,7 +1,7 @@
 ---
-title: "Logging and Metrics for SocketFlow Applications"
+title: "Structured Logging and Prometheus Metrics in SocketFlow"
 sidebarTitle: "Observability"
-description: "SocketFlow ships structured logging and Prometheus-compatible metrics. Both are silent by default and require explicit configuration to produce any output."
+description: "SocketFlow ships structured logging and Prometheus metrics. Both are off by default and require explicit configuration to produce any output."
 ---
 
 SocketFlow ships structured logging and Prometheus-compatible metrics. Both are off by default — adding either one changes nothing in your application until you explicitly ask for output. This means you can deploy SocketFlow in an application that manages its own logging without any interference.
@@ -33,12 +33,24 @@ Every field is labeled, so you can filter, aggregate, and alert on structured va
 
 ### Log Levels
 
-| Level | Shows |
-|---|---|
-| `DEBUG` | Every message sent and received, keepalive ticks |
-| `INFO` | Connections, server start/stop, drain events |
-| `WARNING` | Rejected connections, unexpected disconnects |
-| `ERROR` | Handler failures, TLS errors, invalid frames |
+| Level | Value | Shows |
+|---|---|---|
+| `DEBUG` | 10 | Every message sent and received, keepalive ticks |
+| `INFO` | 20 | Connections, server start/stop, drain events |
+| `WARNING` | 30 | Rejected connections, unexpected disconnects |
+| `ERROR` | 40 | Handler failures, TLS errors, invalid frames |
+| `CRITICAL` | 50 | Fatal errors that prevent normal operation |
+| `OFF` | 100 | Disables all logging output |
+
+Pass level constants or their string equivalents to `configure()`:
+
+```python
+from socketflow import logs, LogLevel
+
+logs.configure(level=LogLevel.WARNING)   # constant
+logs.configure(level="warning")          # case-insensitive string
+logs.configure(level=LogLevel.OFF)       # silence everything
+```
 
 ### Custom Sinks
 
@@ -98,7 +110,7 @@ logs.configure(level="INFO", json_output=True, max_message_length=2000)
 
 Fields longer than the limit are cut and annotated:
 
-```
+```text
 "message": "A very long value ... [truncated 48213 chars]"
 ```
 
@@ -141,6 +153,7 @@ print(text)
 | `bytes_sent_total` | counter | Raw bytes written to sockets |
 | `errors_total` | counter | Errors, labeled by `context` (e.g. `server.handle_data`) |
 | `backpressure_total` | counter | Rejections from full outbound queues or connection limits |
+| `request_duration_seconds` | histogram | Duration of request handler execution |
 
 ### Prometheus Integration
 
@@ -170,7 +183,7 @@ metrics_server.serve_forever()
 
 Prometheus will then scrape `http://your-host:9090/` and see output like:
 
-```
+```text
 socketflow_connections_accepted_total 1
 socketflow_connections_active 1
 socketflow_messages_received_total{path="echo"} 4

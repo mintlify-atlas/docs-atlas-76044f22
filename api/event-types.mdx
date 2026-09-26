@@ -228,6 +228,7 @@ Fired for every message received from the server that does not match a registere
 | `data_id` | `str \| None` | Correlation ID for this message |
 | `params` | `dict[str, str]` | Path parameters extracted from a pattern route |
 | `direct_response` | `bool` | `True` if the server is awaiting a reply |
+| `client_identity` | `str \| None` | TLS certificate common name, or `None` |
 
 ```python
 @client.event(EventType.Client.MESSAGE)

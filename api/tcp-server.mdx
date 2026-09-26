@@ -1,5 +1,5 @@
 ---
-title: "TcpServer API Reference"
+title: "TcpServer Class Reference — SocketFlow TCP Networking"
 sidebarTitle: "TcpServer"
 description: "Complete API reference for TcpServer — SocketFlow's zero-dependency TCP server with TLS, mutual auth, compression, keepalive, and path-based routing."
 ---
@@ -47,6 +47,10 @@ description: "Complete API reference for TcpServer — SocketFlow's zero-depende
 </ParamField>
 
 ### Buffers and Limits
+
+<ParamField path="flow_control" type="bool" required={false}>
+  Enable outbound flow control. When `True`, sending to a client whose outbound queue is full raises `Backpressure` instead of silently dropping frames. Default: `True`.
+</ParamField>
 
 <ParamField path="recv_buffer_size" type="int" required={false}>
   OS-level receive socket buffer size in bytes. Default: `65536`.
@@ -447,11 +451,10 @@ def draining(self) -> bool
 ### `metrics`
 
 ```python
-@property
-def metrics(self) -> MetricsRegistry
+metrics: MetricsRegistry
 ```
 
-The `MetricsRegistry` instance recording this server's counters, gauges, and histograms. Use `metrics.counter_value(...)` and `metrics.gauge_value(...)` for direct reads without converting to a full snapshot.
+The `MetricsRegistry` instance recording this server's counters, gauges, and histograms. Use `metrics_snapshot()` for a plain dict or `metrics_text()` for Prometheus text output.
 
 ---
 
