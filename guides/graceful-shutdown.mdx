@@ -1,0 +1,135 @@
+---
+title: "Graceful Shutdown and Drain In-Flight Requests"
+sidebarTitle: "Graceful Shutdown"
+description: "Use drain() to let in-flight handlers finish and flush queued replies before closing connections, so no replies are lost when stopping a SocketFlow server."
+---
+
+SocketFlow's `drain()` lets in-flight handlers finish before connections close, preventing replies that are already being produced from being lost. When you call `drain()`, the server stops accepting new connections immediately but allows every running or queued handler to complete and every queued reply to be flushed to its client socket.
+
+## The `drain()` Method
+
+```python
+finished = server.drain(timeout=10.0, reason="shutdown")
+print("drained cleanly:", finished)
+```
+
+`drain(timeout, reason)` does four things in order:
+
+1. Sets `server.draining = True` and stops accepting new connections.
+2. Emits the `EventType.Server.DRAINING` event.
+3. Waits for running and queued handlers to finish.
+4. Flushes any replies those handlers queued to the client sockets.
+
+It returns `True` if everything completed before `timeout` expired, or `False` if the timeout was reached first. It does **not** close connections by itself — existing clients stay connected until `stop()` closes them.
+
+## Stopping with Drain
+
+<Tabs>
+  <Tab title="stop() with drain">
+    Pass `drain=True` to `stop()` to drain before closing all connections. This is the most common pattern for a clean process exit.
+
+    ```python
+    # Drain in-flight work, then close all connections and stop accepting
+    server.stop(drain=True, drain_timeout=10.0)
+    ```
+  </Tab>
+  <Tab title="shutdown()">
+    `shutdown()` drains by default and then also shuts down the dispatcher and request-timeout scheduler — making the server permanently unusable. Use it when the process is about to exit.
+
+    ```python
+    server.shutdown()                    # drain=True, drain_timeout=10.0
+    server.shutdown(drain=False)         # immediate stop, no drain
+    server.shutdown(drain_timeout=30.0)  # longer budget for slow handlers
+    ```
+  </Tab>
+  <Tab title="drain() then stop()">
+    Call `drain()` separately when you need the boolean result before deciding whether to force-stop.
+
+    ```python
+    finished = server.drain(timeout=10.0)
+    if not finished:
+        print("Some handlers did not finish — forcing stop")
+    server.stop()
+    ```
+  </Tab>
+</Tabs>
+
+## Observing the Drain Event
+
+Register a handler for `EventType.Server.DRAINING` to log or update health-check state when a drain starts. The event data is a `ServerDrainData` object.
+
+```python
+from socketflow import EventType
+
+@server.event(EventType.Server.DRAINING)
+def on_draining(data):
+    print(
+        f"Draining started: reason={data.reason}, "
+        f"connected_clients={data.connected_clients}, "
+        f"host={data.host}, port={data.port}"
+    )
+```
+
+Check `server.draining` at any time to see whether a drain is in progress:
+
+```python
+if server.draining:
+    print("Server is draining — not accepting new work")
+```
+
+## Client Shutdown
+
+On the client side, `shutdown()` and `disconnect()` serve different purposes:
+
+| Method | What it does |
+|---|---|
+| `disconnect()` | Closes the socket and fails pending requests. The client object can be reconnected later with `connect()`. |
+| `shutdown()` | Calls `disconnect()` and also permanently shuts down the dispatcher and timeout scheduler. The client object cannot be reused after this. |
+
+```python
+# Temporary disconnect — can reconnect later
+client.disconnect()
+client.connect()
+
+# Permanent close — process is exiting
+client.shutdown()
+```
+
+## Complete Graceful Shutdown Pattern
+
+The following pattern is suitable for long-running servers that need to handle SIGTERM cleanly:
+
+```python
+import signal
+from socketflow import TcpServer, EventType
+
+server = TcpServer(host="0.0.0.0", port=8080)
+
+@server.event(EventType.Server.DRAINING)
+def on_draining(data):
+    print(f"Shutting down: {data.connected_clients} clients still connected")
+
+@server.event(EventType.Server.STOP)
+def on_stop(data):
+    print("Server stopped")
+
+def handle_sigterm(signum, frame):
+    # Give handlers up to 30 s to finish, then force-stop
+    finished = server.drain(timeout=30.0, reason="sigterm")
+    if not finished:
+        print("Drain timed out — some handlers may not have finished")
+    server.shutdown(drain=False)   # already drained above
+
+signal.signal(signal.SIGTERM, handle_sigterm)
+
+server.start()
+server.wait()
+```
+
+<Note>
+Always pass a `drain_timeout` value. A handler that blocks forever — for example waiting on an external service that never responds — will hold the drain open until the timeout expires and `drain()` returns `False`. Without a finite timeout the process can hang indefinitely.
+</Note>
+
+<Warning>
+Draining waits for handler tasks to complete, not for clients to disconnect. Long-lived clients that hold an open connection but send nothing will remain connected throughout the drain and will only be disconnected when `stop()` closes the listening socket and all client transports. Do not rely on `drain()` alone to close connections.
+</Warning>

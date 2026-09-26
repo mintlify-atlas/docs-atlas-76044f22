@@ -1,0 +1,143 @@
+---
+title: "Compress TCP Payloads with Built-in Codecs"
+sidebarTitle: "Compression"
+description: "SocketFlow compresses all messages by default using zlib. Choose from six codecs, install optional extras for zstd or brotli, and tune decompression limits."
+---
+
+SocketFlow compresses all messages by default using zlib. Every outbound payload is compressed before it leaves the wire and decompressed automatically on receipt — your application code sends and receives ordinary Python objects with no manual compression steps. Six codecs are available, four of which ship with Python's standard library and require no extra installation.
+
+## Built-in Codecs
+
+| Codec | Source | Max level | Notes |
+|---|---|---|---|
+| `zlib` | Standard library | 9 | **Default.** Fast, widely supported. |
+| `lzma` | Standard library | 9 | High compression ratio, slower CPU. |
+| `bz2` | Standard library | 9 | Good ratio, moderate speed. |
+| `gzip` | Standard library | 9 | Compatible with gzip tooling. |
+| `zstd` | Optional extra | 22 | Very fast; requires `zstandard`. |
+| `brotli` | Optional extra | 11 | Good ratio for text; requires `Brotli`. |
+
+## Installing Optional Extras
+
+The `zstd` and `brotli` codecs are not part of the Python standard library. Install them as SocketFlow extras:
+
+```bash
+pip install socketflow[zstd]      # adds zstandard
+pip install socketflow[brotli]    # adds Brotli
+pip install socketflow[all]       # adds both
+```
+
+If you request a codec that is not installed, SocketFlow raises a clear error telling you exactly what to run:
+
+```
+Compression method 'zstd' is not available because 'zstandard' is not
+installed. Install it with 'pip install socketflow[zstd]', or choose one of:
+lzma, bz2, zlib, gzip.
+```
+
+## Enabling and Configuring Compression
+
+Compression is on by default. The three constructor parameters that control it are:
+
+| Parameter | Default | Description |
+|---|---|---|
+| `compress` | `True` | Enable or disable compression entirely. |
+| `compression_type` | `"zlib"` | Codec name (case-insensitive). |
+| `compression_level` | `6` | Compression effort level (valid range depends on codec). |
+
+```python
+from socketflow import TcpServer
+
+# Default: zlib at level 6
+server = TcpServer(host="0.0.0.0", port=8080)
+
+# Disable compression for already-compressed data (e.g. images, video)
+server = TcpServer(host="0.0.0.0", port=8080, compress=False)
+
+# High-throughput workload: zstd at level 3
+server = TcpServer(
+    host="0.0.0.0",
+    port=8080,
+    compression_type="zstd",
+    compression_level=3,
+)
+```
+
+Both server and client have independent `compression_type` and `compression_level` settings. The codec used for each direction is embedded in the compressed frame header, so mismatched codecs are fine — each side decompresses whatever it receives.
+
+## Switching Codecs
+
+Pass the codec name as a string. The same parameter works on `TcpClient`:
+
+```python
+from socketflow import TcpClient
+
+client = TcpClient(
+    host="127.0.0.1",
+    port=8080,
+    compression_type="zstd",
+    compression_level=5,
+)
+```
+
+## Checking Available Codecs
+
+Before deploying to a new environment, verify which codecs are actually importable:
+
+```python
+from socketflow.global_side.compression import MultiCompressor
+
+print(MultiCompressor.available_methods())
+# e.g. ['zstd', 'brotli', 'lzma', 'bz2', 'zlib', 'gzip']
+# or   ['lzma', 'bz2', 'zlib', 'gzip']  without the extras
+```
+
+## Decompression Size Limit
+
+The `max_decompressed_size` parameter (default **16 MB**) protects against zip-bomb attacks where a small compressed payload expands into a huge in-memory object. Messages that decompress beyond this limit are rejected with a `CompressionError`.
+
+```python
+server = TcpServer(
+    host="0.0.0.0",
+    port=8080,
+    max_decompressed_size=64 * 1024 * 1024,  # raise limit to 64 MB
+)
+```
+
+## Payload Serialization
+
+By default SocketFlow serializes payloads using **safe JSON/bytes encoding** (`allow_pickle=False`). Bytes and bytearray values are base64-encoded inside the JSON envelope, so arbitrary binary data is handled safely. 
+
+Setting `allow_pickle=True` uses Python's `pickle` module instead, which supports any Python object but is **unsafe with untrusted data** — a malicious pickle payload can execute arbitrary code.
+
+```python
+# Safe default — JSON serialization
+server = TcpServer(host="0.0.0.0", port=8080)
+
+# Legacy peers only — only set True when you fully control both sides
+server = TcpServer(
+    host="0.0.0.0",
+    port=8080,
+    allow_pickle=True,
+)
+```
+
+<Warning>
+`allow_pickle=False` is the safe default. Only set `allow_pickle=True` when communicating with explicitly trusted legacy peers that you control. A compromised or malicious peer can use a crafted pickle payload to execute arbitrary code on the receiving process.
+</Warning>
+
+## Handling CompressionError
+
+`CompressionError` is raised when compression or decompression fails — for example when the decompressed size exceeds `max_decompressed_size`, or when the codec reports corrupt data.
+
+```python
+from socketflow import TcpClient, EventType
+from socketflow.global_side.exceptions import ExceptionType
+
+client = TcpClient(host="127.0.0.1", port=8080)
+
+@client.event(EventType.Global.ERROR)
+def on_error(data):
+    if isinstance(data.error, ExceptionType.CompressionError):
+        print(f"Compression error in {data.context}: {data.error}")
+```

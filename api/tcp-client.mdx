@@ -1,0 +1,467 @@
+---
+title: "TcpClient API Reference"
+sidebarTitle: "TcpClient"
+description: "Complete API reference for TcpClient — SocketFlow's zero-dependency TCP client with TLS, mutual auth, compression, keepalive, and path-based routing."
+---
+
+`TcpClient` is the client-side counterpart to `TcpServer` in SocketFlow. It opens a TCP connection to a server, performs the optional security handshake, and then lets you send and receive messages in a fire-and-forget, blocking, or fully async fashion. Like the server, it is zero-dependency, supports TLS and mutual-TLS, token or credential authentication, multiple compression codecs, keepalive probes, a shared memory budget, and Prometheus-compatible metrics.
+
+## Constructor Parameters
+
+### Connection
+
+<ParamField path="host" type="str" required={false}>
+  Hostname or IP address of the server to connect to. Default: `"127.0.0.1"`.
+</ParamField>
+
+<ParamField path="port" type="int" required={false}>
+  TCP port of the server. Default: `8080`.
+</ParamField>
+
+<ParamField path="connection_timeout" type="float" required={false}>
+  Seconds allowed for the TCP connect call to complete. Raises `ConnectionTimeout` on expiry. Default: `10.0`.
+</ParamField>
+
+### Keepalive
+
+<ParamField path="keepalive_interval" type="float" required={false}>
+  How often (in seconds) the client sends a ping probe to the server. Default: `30.0`.
+</ParamField>
+
+<ParamField path="keepalive_max_missed" type="int" required={false}>
+  Number of consecutive missed keepalives before the connection is considered dead and closed. Default: `3`.
+</ParamField>
+
+### Compression
+
+<ParamField path="compress" type="bool" required={false}>
+  Enable payload compression on outbound messages. Default: `True`.
+</ParamField>
+
+<ParamField path="compression_type" type="str" required={false}>
+  Codec to use. Built-in: `"zlib"`, `"lzma"`, `"bz2"`, `"gzip"`. Optional extras: `"zstd"`, `"brotli"`. Default: `"zlib"`.
+</ParamField>
+
+<ParamField path="compression_level" type="int" required={false}>
+  Compression effort from `1` (fastest) to `9` (smallest). Default: `6`.
+</ParamField>
+
+### Buffers and Limits
+
+<ParamField path="recv_buffer_size" type="int" required={false}>
+  OS-level receive socket buffer size in bytes. Default: `65536`.
+</ParamField>
+
+<ParamField path="send_buffer_size" type="int" required={false}>
+  OS-level send socket buffer size in bytes. Default: `65536`.
+</ParamField>
+
+<ParamField path="max_frame_size" type="int" required={false}>
+  Maximum allowed size for a single inbound or outbound frame. Frames exceeding this raise `InvalidData`. Default: `8388608` (8 MB).
+</ParamField>
+
+<ParamField path="max_outbound_queue_bytes" type="int" required={false}>
+  Maximum bytes that may be queued for sending to the server. Exceeding this raises `Backpressure`. Default: `16777216` (16 MB).
+</ParamField>
+
+<ParamField path="max_pending_writes" type="int" required={false}>
+  Maximum number of outbound frames that may be queued at once. Default: `1000`.
+</ParamField>
+
+<ParamField path="max_memory_bytes" type="int" required={false}>
+  Shared memory budget for all receive buffers and outbound queues. Default: `67108864` (64 MB).
+</ParamField>
+
+<ParamField path="max_decompressed_size" type="int" required={false}>
+  Maximum size a compressed payload may expand to after decompression. Larger payloads are rejected. Default: `16777216` (16 MB).
+</ParamField>
+
+### Dispatcher
+
+<ParamField path="max_dispatch_workers" type="int" required={false}>
+  Maximum number of worker threads used to run event and path handlers in parallel. Default: `32`.
+</ParamField>
+
+<ParamField path="max_pending_tasks" type="int" required={false}>
+  Maximum number of handler invocations that may be queued while waiting for a free worker. Default: `1000`.
+</ParamField>
+
+<ParamField path="dispatch_queue_timeout" type="float" required={false}>
+  Seconds to wait for a worker slot before rejecting the task. Default: `1.0`.
+</ParamField>
+
+### TLS
+
+<ParamField path="tls_enabled" type="bool" required={false}>
+  Wrap the connection with TLS. Default: `False`.
+</ParamField>
+
+<ParamField path="tls_ca_certs" type="str" required={false}>
+  Path to the trusted CA certificate file used to verify the server's certificate (PEM). When `None`, the system's default CA store is used. Default: `None`.
+</ParamField>
+
+<ParamField path="tls_server_hostname" type="str" required={false}>
+  Server name used for TLS hostname verification. Falls back to `host` when `None`. Default: `None`.
+</ParamField>
+
+<ParamField path="tls_certfile" type="str" required={false}>
+  Path to the client certificate file (PEM) for mutual TLS. Must be paired with `tls_keyfile`. Default: `None`.
+</ParamField>
+
+<ParamField path="tls_keyfile" type="str" required={false}>
+  Path to the client private key file (PEM) for mutual TLS. Must be paired with `tls_certfile`. Default: `None`.
+</ParamField>
+
+### Auth
+
+<ParamField path="auth_enabled" type="bool" required={false}>
+  Send the authentication handshake. Automatically `True` when `auth_token`, `auth_username`, or `require_handshake` is set. Default: `False`.
+</ParamField>
+
+<ParamField path="auth_token" type="str" required={false}>
+  Shared secret token to send during the handshake. Mutually exclusive with `auth_username`/`auth_password`. Default: `None`.
+</ParamField>
+
+<ParamField path="auth_username" type="str" required={false}>
+  Username for credential-based authentication. Must be paired with `auth_password`. Mutually exclusive with `auth_token`. Default: `None`.
+</ParamField>
+
+<ParamField path="auth_password" type="str" required={false}>
+  Password paired with `auth_username`. Default: `None`.
+</ParamField>
+
+<ParamField path="auth_timeout" type="float" required={false}>
+  Seconds to wait for the server to acknowledge authentication. Default: `30.0`.
+</ParamField>
+
+<ParamField path="require_handshake" type="bool" required={false}>
+  Block outbound messages until the full security handshake (server-ready + auth + handshake-ok) completes. Default: `True`.
+</ParamField>
+
+<ParamField path="handshake_timeout" type="float" required={false}>
+  Timeout in seconds for the entire handshake sequence. Falls back to `connection_timeout` when `None`. Default: `None`.
+</ParamField>
+
+### Protocol
+
+<ParamField path="protocol_version" type="int" required={false}>
+  Advertise and require exactly this protocol version. When `None`, version negotiation is disabled. Default: `None`.
+</ParamField>
+
+<ParamField path="min_protocol_version" type="int" required={false}>
+  Lowest protocol version the client accepts during negotiation. Default: `None`.
+</ParamField>
+
+<ParamField path="max_protocol_version" type="int" required={false}>
+  Highest protocol version the client accepts. `min_protocol_version` must not exceed this value. Default: `None`.
+</ParamField>
+
+### Other
+
+<ParamField path="allow_pickle" type="bool" required={false}>
+  Allow legacy pickle-serialized payloads. Only enable for fully trusted, internal servers — pickle is unsafe with untrusted data. Default: `False`.
+</ParamField>
+
+---
+
+## Methods
+
+### `connect()`
+
+```python
+def connect() -> None
+```
+
+Open the TCP socket, optionally wrap it with TLS, start the background reader thread, and perform the security handshake if required. Raises `ConnectionTimeout` if the TCP connect or handshake exceeds their timeouts, `TlsError` on TLS failures, `AuthenticationError` when credentials are rejected, and `ProtocolVersionError` when the server's protocol range does not overlap with the client's.
+
+---
+
+### `disconnect()`
+
+```python
+def disconnect() -> None
+```
+
+Close the connection, fail all pending response handles with `NotConnected`, and join the reader thread. This method is safe to call from any thread.
+
+---
+
+### `shutdown()`
+
+```python
+def shutdown() -> None
+```
+
+Permanently close the client, its event dispatcher, and the timeout scheduler. Call this instead of `disconnect()` when you will not reuse the client instance.
+
+---
+
+### `wait()`
+
+```python
+def wait() -> None
+```
+
+Block the calling thread while the client is connected. Returns when `disconnect()` is called or the server closes the connection. Handles `KeyboardInterrupt` by calling `disconnect()` automatically.
+
+---
+
+### `connect_and_wait()`
+
+```python
+def connect_and_wait() -> None
+```
+
+Convenience wrapper — calls `connect()` then `wait()`.
+
+---
+
+### `send(data, data_id, path, wait_response, wait_response_timeout)`
+
+```python
+def send(
+    data: Any,
+    data_id: Optional[str] = None,
+    path: Optional[str] = None,
+    wait_response: bool = False,
+    wait_response_timeout: Optional[float] = 30.0,
+)
+```
+
+Send a message to the server.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `data` | `Any` | — | Payload to send. Compressed when `compress=True`. |
+| `data_id` | `str \| None` | `None` | Explicit message ID. A UUID is generated when `None`. |
+| `path` | `str \| None` | `None` | Route path the server uses to dispatch this message. |
+| `wait_response` | `bool` | `False` | When `True`, block until the server replies or the timeout expires. |
+| `wait_response_timeout` | `float \| None` | `30.0` | Seconds to wait for a reply when `wait_response=True`. |
+
+Returns the response payload when `wait_response=True`, otherwise `None`. Raises `NotConnected` if not connected, `HandshakeError` if the handshake is not yet complete, and `NoResponse` on timeout.
+
+---
+
+### `send_async(data, data_id, path, timeout)`
+
+```python
+def send_async(
+    data: Any,
+    data_id: Optional[str] = None,
+    path: Optional[str] = None,
+    timeout: Optional[float] = 30.0,
+) -> RequestHandle
+```
+
+Send a request without blocking and return a `RequestHandle` immediately.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `data` | `Any` | — | Payload to send. |
+| `data_id` | `str \| None` | `None` | Explicit message ID. |
+| `path` | `str \| None` | `None` | Route path on the server side. |
+| `timeout` | `float \| None` | `30.0` | Seconds before the handle's `result()` raises `NoResponse`. |
+
+Returns a `RequestHandle`. See the [RequestHandle API Reference](/api/request-handle) for details.
+
+<Warning>
+  Pass a `timeout` value. Using `timeout=None` keeps the handle in `pending_responses`
+  until the connection closes. Every unanswered request grows `len(client.pending_responses)`.
+</Warning>
+
+---
+
+### `is_connected()`
+
+```python
+def is_connected() -> bool
+```
+
+Return `True` if the client currently has an active connection.
+
+---
+
+### `event(event_type)`
+
+```python
+def event(event_type: str)
+```
+
+Decorator that registers a handler for a named event.
+
+```python
+@client.event(EventType.Client.DISCONNECT)
+def on_disconnect(data):
+    print(f"Disconnected from {data.server_addr}")
+```
+
+---
+
+### `path(path, middleware)`
+
+```python
+def path(path: str, middleware=None, block: bool = False)
+```
+
+Decorator that registers a handler for server-pushed messages that arrive on a specific path.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `path` | `str` | — | The route string, e.g. `"/notifications"`. |
+| `middleware` | `callable \| list \| None` | `None` | One callable or a list of callables run before the handler. |
+| `block` | `bool` | `False` | Run the handler synchronously in the dispatcher thread. |
+
+```python
+@client.path("/notifications")
+def on_notification(data):
+    print("Server push:", data.data)
+```
+
+---
+
+### `register_blueprint(blueprint)`
+
+```python
+def register_blueprint(blueprint: Blueprint) -> None
+```
+
+Attach a `Blueprint` to this client. All event and path handlers on the blueprint are registered with the client's dispatcher, and the blueprint's `_client` reference is set so that `blueprint.send()` and related methods work.
+
+---
+
+## Properties
+
+### `negotiated_protocol_version`
+
+```python
+@property
+def negotiated_protocol_version(self) -> Optional[int]
+```
+
+The protocol version agreed with the server during the handshake, or `None` when version negotiation was not used or has not yet completed.
+
+---
+
+### `handshake_completed`
+
+```python
+@property
+def handshake_completed(self) -> bool
+```
+
+`True` once the full security handshake (server-ready + optional auth + handshake-ok) has completed successfully.
+
+---
+
+### `metrics`
+
+```python
+@property
+def metrics(self) -> MetricsRegistry
+```
+
+The `MetricsRegistry` instance recording this client's counters, gauges, and histograms.
+
+---
+
+### `memory_used`
+
+```python
+@property
+def memory_used(self) -> int
+```
+
+Bytes currently reserved by the shared memory budget for this client's buffers and outbound queues.
+
+---
+
+### `memory_limit`
+
+```python
+@property
+def memory_limit(self) -> int
+```
+
+Maximum bytes allowed by the memory budget (the value passed as `max_memory_bytes`).
+
+---
+
+## Usage Examples
+
+### Basic Connect, Send, and Disconnect
+
+```python
+from socketflow import TcpClient, EventType
+
+client = TcpClient(host="127.0.0.1", port=8080)
+
+@client.event(EventType.Client.MESSAGE)
+def on_message(data):
+    print(f"Server says: {data.data}")
+
+client.connect()
+
+# Fire-and-forget
+client.send({"action": "ping"}, path="/health")
+
+# Blocking request/reply
+response = client.send(
+    {"action": "echo", "value": 42},
+    path="/echo",
+    wait_response=True,
+    wait_response_timeout=5.0,
+)
+print("Echo response:", response)
+
+client.disconnect()
+```
+
+### Client with Token Auth
+
+```python
+from socketflow import TcpClient
+
+client = TcpClient(
+    host="127.0.0.1",
+    port=8080,
+    auth_token="super-secret-token",
+    auth_timeout=10.0,
+)
+
+client.connect()  # HandshakeError raised if token is wrong
+print("Authenticated:", client.handshake_completed)
+
+client.send({"msg": "hello"})
+client.disconnect()
+```
+
+### Client with TLS and Mutual Auth
+
+```python
+from socketflow import TcpClient, EventType
+
+client = TcpClient(
+    host="server.example.com",
+    port=8443,
+    # TLS
+    tls_enabled=True,
+    tls_ca_certs="ca.crt",
+    tls_server_hostname="server.example.com",
+    # Mutual TLS: present our certificate
+    tls_certfile="client.crt",
+    tls_keyfile="client.key",
+    # Application-level auth on top of mTLS
+    auth_token="replace-with-a-secret",
+)
+
+@client.event(EventType.Client.CONNECT)
+def on_connect(data):
+    print(f"Securely connected. Protocol: {client.negotiated_protocol_version}")
+
+client.connect()
+
+handle = client.send_async({"query": "status"}, path="/status", timeout=5.0)
+print(handle.result().data)
+
+client.shutdown()
+```

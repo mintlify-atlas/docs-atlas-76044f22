@@ -1,0 +1,249 @@
+---
+title: "Blueprints: Modular Message Handler Organization"
+sidebarTitle: "Blueprints"
+description: "Use SocketFlow Blueprints to split message handlers into focused, reusable modules — inspired by Flask blueprints — and register them with any server or client."
+---
+
+As a SocketFlow application grows, keeping all event and path handlers in a single file becomes hard to navigate. Blueprints solve this by letting you group related handlers into a self-contained module, then register the whole module with a server or client in one line. The concept is directly inspired by Flask's blueprint system: define handlers in isolation, register them where needed, and keep each part of your application focused on a single responsibility.
+
+## Creating a Blueprint
+
+Instantiate `Blueprint` with a name, then decorate handler functions exactly as you would on a server or client directly.
+
+```python
+from socketflow import Blueprint
+
+user_bp = Blueprint("user")
+
+@user_bp.path("/user/login")
+def handle_login(data):
+    credentials = data.data
+    # Validate and respond
+    user_bp.send_client(
+        data.client_addr,
+        {"ok": True, "user": credentials.get("username")},
+    )
+
+@user_bp.path("/user/register")
+def handle_register(data):
+    new_user = data.data
+    # Create account
+    user_bp.send_client(
+        data.client_addr,
+        {"ok": True, "created": new_user.get("username")},
+    )
+
+@user_bp.path("/user/profile/<user_id>")
+def handle_profile(data, user_id):
+    user_bp.send_client(
+        data.client_addr,
+        {"user_id": user_id, "profile": {}},
+    )
+```
+
+Blueprints support the same decorator API as the server and client:
+
+| Decorator | Purpose |
+|---|---|
+| `@bp.event(event_type)` | Handle a lifecycle event (e.g. `EventType.Server.CLIENT_CONNECT`) |
+| `@bp.path(route)` | Handle messages routed to a specific path |
+| `@bp.path(route, middleware=[...])` | Handle a path with one or more middleware functions |
+| `@bp.path(route, block=True)` | Serialize per-client dispatch for that path |
+
+## Registering with a Server or Client
+
+Call `register_blueprint()` on the server or client to wire all of the blueprint's handlers into the live dispatcher. The blueprint receives a back-reference to the server or client at registration time, which is what makes `bp.send_client()` and friends work inside handler functions.
+
+```python
+from socketflow import TcpServer
+
+server = TcpServer(host="0.0.0.0", port=8080)
+server.register_blueprint(user_bp)
+server.start_and_wait()
+```
+
+For a client-side blueprint:
+
+```python
+from socketflow import TcpClient
+
+client = TcpClient(host="127.0.0.1", port=8080)
+client.register_blueprint(user_bp)
+client.connect()
+```
+
+## Sending from a Blueprint
+
+Once registered, a blueprint can send messages without holding a direct reference to the server or client. The methods mirror those on `TcpServer` and `TcpClient`.
+
+### Client-side sending
+
+```python
+# Fire-and-forget or request/reply
+bp.send(
+    data: Any,
+    data_id: Optional[str] = None,
+    path: Optional[str] = None,
+    wait_response: bool = False,
+    wait_response_timeout: Optional[float] = 30.0,
+)
+
+# Non-blocking — returns a RequestHandle
+bp.send_async(
+    data: Any,
+    data_id: Optional[str] = None,
+    path: Optional[str] = None,
+    timeout: Optional[float] = 30.0,
+)
+```
+
+### Server-side sending
+
+```python
+# Fire-and-forget or request/reply to a specific client
+bp.send_client(
+    client_addr: tuple,
+    data: Any,
+    data_id: Optional[str] = None,
+    path: Optional[str] = None,
+    wait_response: bool = False,
+    wait_response_timeout: Optional[float] = 30.0,
+)
+
+# Non-blocking — returns a RequestHandle
+bp.send_client_async(
+    client_addr: tuple,
+    data: Any,
+    data_id: Optional[str] = None,
+    path: Optional[str] = None,
+    timeout: Optional[float] = 30.0,
+)
+```
+
+## Checking Connection Status
+
+`Blueprint.is_connected()` delegates to the underlying server or client.
+
+```python
+# Client-side blueprint — no argument needed
+if user_bp.is_connected():
+    user_bp.send({"heartbeat": True})
+
+# Server-side blueprint — must pass client_addr
+if user_bp.is_connected(client_addr):
+    user_bp.send_client(client_addr, {"ping": True})
+```
+
+Calling `is_connected()` on a server-side blueprint without a `client_addr` raises a `BlueprintError`.
+
+## Complete Example
+
+Below is a realistic "user" blueprint that handles login and registration, registered with a server alongside a separate "room" blueprint.
+
+```python
+# blueprints/user.py
+from socketflow import Blueprint
+
+user_bp = Blueprint("user")
+
+def require_fields(*fields):
+    """Middleware that rejects messages missing required keys."""
+    def middleware(data):
+        if not isinstance(data.data, dict):
+            return False
+        for field in fields:
+            if field not in data.data:
+                return False
+        return data
+    return middleware
+
+@user_bp.path("/user/login", middleware=require_fields("username", "password"))
+def handle_login(data):
+    username = data.data["username"]
+    password = data.data["password"]
+    authenticated = username == "alice" and password == "s3cr3t"
+    user_bp.send_client(
+        data.client_addr,
+        {"ok": authenticated, "user": username if authenticated else None},
+    )
+
+@user_bp.path("/user/register", middleware=require_fields("username", "password", "email"))
+def handle_register(data):
+    # Persist new user (pseudo-code)
+    user_bp.send_client(
+        data.client_addr,
+        {"ok": True, "created": data.data["username"]},
+    )
+
+@user_bp.path("/user/logout")
+def handle_logout(data):
+    user_bp.send_client(data.client_addr, {"ok": True})
+```
+
+```python
+# blueprints/room.py
+from socketflow import Blueprint
+
+room_bp = Blueprint("room")
+
+@room_bp.path("/room/<room_id>/join")
+def handle_join(data, room_id):
+    room_bp.send_client(
+        data.client_addr,
+        {"ok": True, "room": room_id, "joined": True},
+    )
+
+@room_bp.path("/room/<room_id>/leave")
+def handle_leave(data, room_id):
+    room_bp.send_client(
+        data.client_addr,
+        {"ok": True, "room": room_id, "left": True},
+    )
+```
+
+```python
+# server.py
+from socketflow import TcpServer
+from blueprints.user import user_bp
+from blueprints.room import room_bp
+
+server = TcpServer(host="0.0.0.0", port=8080)
+
+server.register_blueprint(user_bp)
+server.register_blueprint(room_bp)
+
+server.start_and_wait()
+```
+
+The client sends to named paths as usual:
+
+```python
+from socketflow import TcpClient
+
+client = TcpClient(host="127.0.0.1", port=8080)
+client.connect()
+
+# Login
+response = client.send(
+    {"username": "alice", "password": "s3cr3t"},
+    path="/user/login",
+    wait_response=True,
+)
+print(response.data)   # {"ok": True, "user": "alice"}
+
+# Join a room
+client.send({"meta": "join"}, path="/room/lobby/join")
+```
+
+## Organizing Large Applications
+
+<Tip>
+  Break a large SocketFlow application into one blueprint per domain area —
+  `auth_bp`, `chat_bp`, `admin_bp`, `metrics_bp`, etc. — each in its own
+  module. Register them all with the same server or client at startup. This
+  keeps each file focused, makes unit-testing handlers easy (just call the
+  function directly without a running server), and lets you disable a feature
+  area by simply not registering its blueprint. Blueprints can also be shared
+  across multiple servers or clients: create the blueprint once and call
+  `register_blueprint()` on as many instances as you need.
+</Tip>

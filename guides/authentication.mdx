@@ -1,0 +1,195 @@
+---
+title: "Authenticate Connections with Tokens or Credentials"
+sidebarTitle: "Authentication"
+description: "Secure every SocketFlow connection with token or username/password auth enforced during the handshake before any application message is accepted."
+---
+
+SocketFlow supports token-based and username/password authentication. Auth happens during the handshake phase — the client sends its credentials immediately after the TCP (and optional TLS) layer is established, and the server validates them before any application messages are accepted. Connections that fail authentication are closed before they can reach your handlers.
+
+## Token Authentication
+
+Pass a shared secret to both server and client using `auth_token`. The server will reject any client that presents a different token or no token at all.
+
+<CodeGroup>
+```python server.py
+from socketflow import TcpServer, EventType
+
+server = TcpServer(
+    host="0.0.0.0",
+    port=8080,
+    auth_token="replace-with-a-strong-secret",
+)
+
+@server.event(EventType.Server.MESSAGE)
+def handle_message(data):
+    print(f"Authenticated message: {data.data}")
+    return "ok"
+
+server.start()
+server.wait()
+```
+
+```python client.py
+from socketflow import TcpClient
+
+client = TcpClient(
+    host="127.0.0.1",
+    port=8080,
+    auth_token="replace-with-a-strong-secret",
+)
+
+client.connect()
+response = client.send("hello", wait_response=True)
+print(response)
+client.disconnect()
+```
+</CodeGroup>
+
+## Username / Password Authentication
+
+For systems that already manage named accounts, use `auth_username` and `auth_password` together. Both values must be provided together on both sides — supplying only one raises a `ValueError` at construction time.
+
+<CodeGroup>
+```python server.py
+from socketflow import TcpServer, EventType
+
+server = TcpServer(
+    host="0.0.0.0",
+    port=8080,
+    auth_username="alice",
+    auth_password="correct-horse-battery-staple",
+)
+
+@server.event(EventType.Server.CLIENT_CONNECT)
+def on_connect(data):
+    print(f"Client connected: {data.client_addr}")
+
+server.start()
+server.wait()
+```
+
+```python client.py
+from socketflow import TcpClient
+
+client = TcpClient(
+    host="127.0.0.1",
+    port=8080,
+    auth_username="alice",
+    auth_password="correct-horse-battery-staple",
+)
+
+client.connect()
+client.send("hello")
+client.disconnect()
+```
+</CodeGroup>
+
+<Note>
+`auth_token` and `auth_username`/`auth_password` are mutually exclusive. Passing both raises a `ValueError` at construction time: `"Use either auth_token or username/password authentication"`.
+</Note>
+
+## How the Handshake Works
+
+<Steps>
+  <Step title="Server sends __server_ready__">
+    As soon as a TCP connection is accepted (and TLS wrapping completes, if enabled), the server sends a `__server_ready__` control frame carrying its protocol version information.
+  </Step>
+  <Step title="Client sends __auth__">
+    The client replies with a `__auth__` control frame containing its credentials: either `{"token": "..."}` or `{"username": "...", "password": "..."}`.
+  </Step>
+  <Step title="Server validates with HMAC compare_digest">
+    The server calls `hmac.compare_digest` on the supplied credentials against the configured values. This constant-time comparison prevents timing attacks that could reveal partial credential matches.
+  </Step>
+  <Step title="Server sends __auth_ack__">
+    On success the server sends `{"ok": true}`. On failure it sends `{"ok": false, "error": "Authentication failed"}` and closes the connection.
+  </Step>
+  <Step title="Server sends __handshake_ok__">
+    After a successful auth ack, the server sends a final `__handshake_ok__` frame. The client unblocks from `connect()` only after receiving this confirmation.
+  </Step>
+</Steps>
+
+## Timeout Parameters
+
+Two timeouts govern how long the handshake phase is allowed to take:
+
+| Parameter | Default | Description |
+|---|---|---|
+| `auth_timeout` | `30.0` s | How long the server waits for the client's `__auth__` frame after the connection is established. |
+| `handshake_timeout` | `None` (falls back to `auth_timeout`) | Total wall-clock budget for the entire TLS + server-ready + auth sequence. |
+
+```python
+server = TcpServer(
+    host="0.0.0.0",
+    port=8080,
+    auth_token="s3cr3t",
+    auth_timeout=10.0,       # close unauthenticated clients after 10 s
+    handshake_timeout=15.0,  # total budget including TLS
+)
+```
+
+## Error Handling
+
+SocketFlow raises two exceptions during the authentication flow:
+
+<Accordion title="AuthenticationError">
+Raised on the **client** side when the server responds with `{"ok": false}` — meaning the credentials were rejected. Catch this in a try/except around `client.connect()`.
+
+```python
+from socketflow import TcpClient
+from socketflow.global_side.exceptions import ExceptionType
+
+client = TcpClient(
+    host="127.0.0.1",
+    port=8080,
+    auth_token="wrong-secret",
+)
+
+try:
+    client.connect()
+except ExceptionType.AuthenticationError as error:
+    print(f"Authentication failed: {error}")
+```
+</Accordion>
+
+<Accordion title="HandshakeError">
+Raised when the handshake sequence doesn't complete within `handshake_timeout` — for example because the server never sent `__handshake_ok__`, or because the connection was dropped mid-handshake.
+
+```python
+from socketflow.global_side.exceptions import ExceptionType
+
+try:
+    client.connect()
+except ExceptionType.HandshakeError as error:
+    print(f"Handshake did not complete: {error}")
+```
+</Accordion>
+
+## Combine with TLS
+
+Authentication credentials travel over the wire in plaintext unless you also enable TLS. For production deployments, always wrap the connection in TLS so that credentials cannot be intercepted.
+
+```python
+server = TcpServer(
+    host="0.0.0.0",
+    port=8080,
+    tls_enabled=True,
+    tls_certfile="server.crt",
+    tls_keyfile="server.key",
+    auth_token="replace-with-a-secret",
+)
+
+client = TcpClient(
+    host="server.example.com",
+    port=8080,
+    tls_enabled=True,
+    tls_ca_certs="ca.crt",
+    tls_server_hostname="server.example.com",
+    auth_token="replace-with-a-secret",
+)
+```
+
+See [Secure Connections with TLS and Mutual TLS](/guides/tls) for the full TLS setup guide.
+
+<Warning>
+Never log or print credentials. SocketFlow uses `hmac.compare_digest` internally to prevent timing attacks — if you copy credentials into f-strings or `print()` calls, you undermine this protection and may expose secrets in log files or process output.
+</Warning>

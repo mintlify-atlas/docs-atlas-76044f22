@@ -1,0 +1,298 @@
+---
+title: "TcpClient: Connecting, Sending, and Receiving Messages"
+sidebarTitle: "Client"
+description: "Understand how TcpClient connects to a SocketFlow server, handles the protocol handshake, sends and receives messages, and supports reconnection patterns."
+---
+
+`TcpClient` is SocketFlow's client-side TCP primitive. It manages the full connection lifecycle — opening a socket, performing the protocol handshake, compressing and framing outbound messages, dispatching inbound messages to your handlers, and monitoring connection health via bidirectional keepalive. Because `TcpClient` is restartable, you can call `connect()` again after a `disconnect()` without creating a new instance, which makes reconnection patterns straightforward to implement.
+
+## Connection Lifecycle
+
+<Steps>
+  <Step title="Instantiate">
+    Create the client with connection parameters. No socket is opened yet.
+
+    ```python
+    from socketflow import TcpClient
+
+    client = TcpClient(
+        host="127.0.0.1",
+        port=8080,
+        compress=True,
+        keepalive_interval=30.0,
+        keepalive_max_missed=3,
+        connection_timeout=10.0,
+        max_memory_bytes=64 * 1024 * 1024,  # 64 MB default
+    )
+    ```
+  </Step>
+
+  <Step title="Register handlers">
+    Attach event and path handlers before calling `connect()`. Handlers can also be registered after connecting, but registering early avoids missing events that fire immediately upon connection.
+
+    ```python
+    from socketflow import EventType
+
+    @client.event(EventType.Client.CONNECT)
+    def on_connect(data):
+        print(f"Connected to {data.server_addr}")
+
+    @client.event(EventType.Client.MESSAGE)
+    def on_message(data):
+        print(f"Received: {data.data}")
+    ```
+  </Step>
+
+  <Step title="Connect">
+    `connect()` opens the TCP socket, performs the protocol handshake, and blocks until the handshake is complete (or `handshake_timeout` is exceeded). Once it returns, the connection is ready for application messages.
+
+    ```python
+    client.connect()
+    ```
+  </Step>
+
+  <Step title="Send and receive messages">
+    Use `send()` to push messages to the server and your registered handlers to receive them. Both fire-and-forget and request/reply patterns are supported.
+
+    ```python
+    client.send({"action": "ping"})
+
+    response = client.send({"action": "echo", "value": 42}, wait_response=True)
+    print(response.data)
+    ```
+  </Step>
+
+  <Step title="Disconnect or shut down">
+    `disconnect()` closes the socket and stops the reader thread, but leaves the dispatcher alive so you can `connect()` again. `shutdown()` permanently destroys the dispatcher — use it when the process is exiting.
+
+    ```python
+    client.disconnect()    # restartable
+    # or
+    client.shutdown()      # permanent
+    ```
+  </Step>
+</Steps>
+
+### Blocking convenience methods
+
+```python
+# Equivalent to connect() + wait() in one call
+client.connect_and_wait()
+
+# If you need code between connect and the blocking wait
+client.connect()
+setup_done()
+client.wait()   # blocks until disconnected or KeyboardInterrupt
+```
+
+## The Handshake Protocol
+
+Every new connection goes through a short handshake before application messages are exchanged. The sequence in plain English:
+
+1. **Server ready** — immediately after the TCP connection is established, the server sends a `server_ready` signal containing the server's supported protocol versions.
+2. **Auth** — the client replies with an `auth` message containing any credentials (`auth_token`, or `auth_username`/`auth_password`) and its own protocol version range.
+3. **Handshake OK** — if authentication succeeds (or none is required), the server sends a `handshake_ok` confirmation. The client unblocks from `connect()` at this point and the `EventType.Client.CONNECT` event fires.
+
+If authentication fails or the handshake times out (controlled by `handshake_timeout`, which defaults to `connection_timeout`), `connect()` raises a `HandshakeError` and no connection is established.
+
+```python
+# Example: client with token authentication
+client = TcpClient(
+    host="127.0.0.1",
+    port=8080,
+    auth_token="my-secret-token",
+)
+client.connect()   # blocks until handshake_ok received
+```
+
+## Sending Messages
+
+### `send` — fire-and-forget or request/reply
+
+```python
+client.send(
+    data: Any,
+    data_id: Optional[str] = None,
+    path: Optional[str] = None,
+    wait_response: bool = False,
+    wait_response_timeout: Optional[float] = 30.0,
+)
+```
+
+<CodeGroup>
+
+```python Fire-and-forget
+# Queued for delivery; returns None immediately
+client.send({"event": "user_joined", "name": "alice"})
+
+# With path routing
+client.send({"username": "alice", "password": "s3cr3t"}, path="/user/login")
+```
+
+```python Request / reply
+# Blocks until the server sends back a matching response
+response = client.send(
+    {"query": "status"},
+    path="/system/status",
+    wait_response=True,
+    wait_response_timeout=5.0,
+)
+print(response.data)   # ResponseData.data
+```
+
+</CodeGroup>
+
+### `send_async` — non-blocking send
+
+`send_async` encodes and queues the message immediately, then returns a `RequestHandle` without waiting for a reply.
+
+```python
+client.send_async(
+    data: Any,
+    data_id: Optional[str] = None,
+    path: Optional[str] = None,
+    timeout: Optional[float] = 30.0,
+) -> RequestHandle
+```
+
+```python
+handle = client.send_async({"query": "report"}, path="/report/generate", timeout=10.0)
+
+# Poll without blocking
+if handle.done():
+    print(handle.result().data)
+
+# Register a callback for when the reply arrives
+def on_reply(h):
+    print("report:", h.result().data)
+
+handle.add_done_callback(on_reply)
+
+# Cancel a request you no longer care about
+handle.cancel()
+```
+
+`RequestHandle` exposes: `done()`, `result(timeout=None)`, `exception(timeout=None)`, `cancel()`, `cancelled()`, `add_done_callback(fn)`, and the `data_id` attribute.
+
+## Receiving Messages
+
+### Catch-all message handler
+
+The `EventType.Client.MESSAGE` event fires for every inbound message that does **not** have a path header (or whose path has no registered handler).
+
+```python
+@client.event(EventType.Client.MESSAGE)
+def on_message(data):
+    # data: MessageReceivedData
+    print(f"From server: {data.data}")
+    print(f"Message ID:  {data.data_id}")
+```
+
+### Path-based routing
+
+`@client.path(route)` registers a handler that fires only when the server sends a message with a matching `path`. See [Events and Path-Based Routing](/concepts/events-and-routing) for full details.
+
+```python
+@client.path("/notification/new")
+def on_notification(data):
+    print(f"New notification: {data.data}")
+
+@client.path("/dashboard/<widget_id>")
+def on_widget_update(data, widget_id):
+    print(f"Widget {widget_id} updated: {data.data}")
+```
+
+### Connection and disconnection events
+
+```python
+@client.event(EventType.Client.CONNECT)
+def on_connect(data):
+    # data: ConnectData
+    print(f"Connected to {data.server_addr}")
+
+@client.event(EventType.Client.DISCONNECT)
+def on_disconnect(data):
+    # data: DisconnectData
+    print(f"Disconnected from {data.server_addr}")
+```
+
+## Reconnection Pattern
+
+Because `disconnect()` leaves the `EventDispatcher` alive and resets only the transport state, you can call `connect()` again on the same instance. This makes retry loops simple:
+
+```python
+import time
+from socketflow import TcpClient
+from socketflow.global_side.exceptions import ExceptionType
+
+client = TcpClient(host="127.0.0.1", port=8080)
+
+@client.event(EventType.Client.MESSAGE)
+def on_message(data):
+    print("received:", data.data)
+
+MAX_RETRIES = 5
+RETRY_DELAY = 3.0   # seconds
+
+for attempt in range(1, MAX_RETRIES + 1):
+    try:
+        client.connect()
+        print(f"Connected on attempt {attempt}")
+        client.wait()   # block until the server drops us
+    except (ExceptionType.ConnectionError, ExceptionType.ConnectionTimeout) as err:
+        print(f"Attempt {attempt} failed: {err}")
+        if attempt < MAX_RETRIES:
+            time.sleep(RETRY_DELAY)
+        else:
+            print("Giving up.")
+            break
+    finally:
+        # Always disconnect before retrying to reset transport state cleanly
+        if client.is_connected():
+            client.disconnect()
+
+# Done for good — destroy the dispatcher
+client.shutdown()
+```
+
+## Memory Limits
+
+Two parameters bound how much RAM a `TcpClient` may use for buffered inbound data and queued outbound frames combined.
+
+| Parameter | Default | Description |
+|---|---|---|
+| `max_memory_bytes` | `64 MB` | Total shared memory budget for inbound receive buffers and outbound write queues. |
+| `max_decompressed_size` | `16 MB` | Maximum size a single compressed message may expand to after decompression. |
+
+```python
+client = TcpClient(
+    host="127.0.0.1",
+    port=8080,
+    max_memory_bytes=128 * 1024 * 1024,    # 128 MB
+    max_decompressed_size=32 * 1024 * 1024, # 32 MB per message
+)
+```
+
+When the budget is exhausted, new inbound data is back-pressured and a `Backpressure` error is emitted. Increase `max_memory_bytes` if you are processing large messages or see unexpected disconnections under load.
+
+## Disconnect vs Shutdown
+
+<Warning>
+  `disconnect()` and `shutdown()` are **not** interchangeable. `disconnect()`
+  closes the socket and stops the reader thread, but the `EventDispatcher`
+  thread pool remains alive. You can call `connect()` again on the same
+  instance. `shutdown()` calls `disconnect()` and then permanently shuts down
+  the dispatcher — after that, no further events will be dispatched and calling
+  `connect()` will leave handlers silently unexecuted. Only call `shutdown()`
+  when you are completely done with the client for the lifetime of the process.
+
+  ```python
+  # Safe to reconnect
+  client.disconnect()
+  client.connect()       # works fine
+
+  # Permanent — do not reconnect after this
+  client.shutdown()
+  client.connect()       # connects, but no events will fire
+  ```
+</Warning>

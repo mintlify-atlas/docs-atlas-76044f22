@@ -1,0 +1,295 @@
+---
+title: "MetricsRegistry: Built-in Prometheus Metrics"
+sidebarTitle: "MetricsRegistry"
+description: "Record and export counters, gauges, and histograms with MetricsRegistry — built-in Prometheus text export and a JSON snapshot for dashboards."
+---
+
+SocketFlow automatically records connection, message, and error metrics as your server and client run. Every `TcpServer` and `TcpClient` instance owns a `MetricsRegistry` accessible via `.metrics`. You can read individual values, export a JSON snapshot, or serve the full Prometheus text format over HTTP — no extra dependencies required.
+
+```python
+from socketflow import MetricsRegistry
+```
+
+---
+
+## Accessing the Registry
+
+```python
+from socketflow import TcpServer
+
+server = TcpServer(host="0.0.0.0", port=8080)
+server.start()
+
+# Read a specific counter
+print(server.metrics.counter_value("messages_received_total", path="echo"))
+
+# Read a gauge
+print(server.metrics.gauge_value("connections_active"))
+
+# Full snapshot as a dict
+print(server.metrics_snapshot())
+
+# Prometheus exposition format
+print(server.metrics_text())
+```
+
+The client exposes the same interface:
+
+```python
+from socketflow import TcpClient
+
+client = TcpClient(host="127.0.0.1", port=8080)
+client.connect()
+
+print(client.metrics.counter_value("messages_sent_total"))
+print(client.metrics_snapshot())
+print(client.metrics_text())
+```
+
+---
+
+## `MetricsRegistry` Constructor
+
+<ParamField body="namespace" type="str" default='"socketflow"'>
+  Prefix prepended to all metric names in Prometheus output. For example, the metric
+  `connections_active` is exported as `socketflow_connections_active`.
+</ParamField>
+
+```python
+# Custom namespace
+registry = MetricsRegistry(namespace="myapp")
+registry.increment("requests_total", path="login")
+```
+
+---
+
+## Recording Methods
+
+### `increment(name, value=1, **labels)`
+
+Adds `value` to a counter. Thread-safe.
+
+<ParamField body="name" type="str" required>Metric name.</ParamField>
+<ParamField body="value" type="float" default="1">Amount to add.</ParamField>
+<ParamField body="**labels" type="str">
+  Optional key-value label pairs. Each unique combination of label values creates a
+  separate time series.
+</ParamField>
+
+```python
+registry.increment("messages_received_total", path="echo")
+registry.increment("errors_total", context="server.handle_data")
+registry.increment("bytes_sent_total", value=4096)
+```
+
+---
+
+### `gauge(name, value, **labels)`
+
+Sets a gauge to an absolute value. Use this for metrics that can go up or down, such as queue depths.
+
+<ParamField body="name" type="str" required>Metric name.</ParamField>
+<ParamField body="value" type="float" required>Absolute value to record.</ParamField>
+<ParamField body="**labels" type="str">Optional label pairs.</ParamField>
+
+```python
+registry.gauge("connections_active", 42)
+```
+
+---
+
+### `gauge_add(name, value, **labels)`
+
+Adds `value` to an existing gauge. Useful for incrementing/decrementing active connection counts.
+
+```python
+registry.gauge_add("connections_active", 1)   # client connected
+registry.gauge_add("connections_active", -1)  # client disconnected
+```
+
+---
+
+### `observe(name, value, **labels)`
+
+Records a single observation into a histogram (cumulative bucket counts). Use for timings and sizes.
+
+<ParamField body="name" type="str" required>Histogram name.</ParamField>
+<ParamField body="value" type="float" required>The observed value (e.g. seconds).</ParamField>
+<ParamField body="**labels" type="str">Optional label pairs.</ParamField>
+
+```python
+registry.observe("request_duration_seconds", 0.042, path="echo")
+```
+
+---
+
+### `timer(name, **labels)`
+
+Context manager that measures elapsed time and records it to a histogram via `observe()`.
+
+```python
+with registry.timer("request_duration_seconds", path="echo") as t:
+    result = handle_request()
+
+print(f"Elapsed: {t.elapsed:.4f}s")
+```
+
+---
+
+### `describe(name, help_text)`
+
+Attaches a human-readable description to a metric. The text appears as `# HELP` lines in Prometheus output.
+
+```python
+registry.describe("messages_received_total", "Total messages received, by path")
+```
+
+---
+
+## Reading Methods
+
+### `counter_value(name, **labels) -> float`
+
+Returns the current value of a counter for the given label combination. Returns `0` if the series does not exist yet.
+
+```python
+total = server.metrics.counter_value("messages_received_total", path="echo")
+print(f"Echo messages received: {total}")
+```
+
+---
+
+### `gauge_value(name, **labels) -> float`
+
+Returns the current value of a gauge. Returns `0` if the series does not exist yet.
+
+```python
+active = server.metrics.gauge_value("connections_active")
+print(f"Active connections: {active}")
+```
+
+---
+
+### `snapshot() -> dict`
+
+Returns a plain nested dictionary of every recorded metric, suitable for JSON serialization or in-process inspection.
+
+```python
+data = server.metrics_snapshot()
+# {
+#   "counters": {
+#     "messages_received_total": {"path=echo": 42, "path=upload": 7},
+#     "connections_accepted_total": {"": 12}
+#   },
+#   "gauges": {
+#     "connections_active": {"": 3}
+#   },
+#   "histograms": {
+#     "request_duration_seconds": {
+#       "path=echo": {"count": 42, "sum": 1.764, "avg": 0.042, "buckets": {...}}
+#     }
+#   }
+# }
+```
+
+Series without labels use the empty string `""` as their key. Series with labels use a readable string such as `"path=echo"`.
+
+---
+
+### `prometheus() -> str` / `server.metrics_text() -> str`
+
+Renders all metrics in the [Prometheus text exposition format](https://prometheus.io/docs/instrumenting/exposition_formats/). Each metric family is preceded by `# HELP` (if described) and `# TYPE` comment lines.
+
+```
+# TYPE socketflow_connections_accepted_total counter
+socketflow_connections_accepted_total 12
+# TYPE socketflow_connections_active gauge
+socketflow_connections_active 3
+# TYPE socketflow_messages_received_total counter
+socketflow_messages_received_total{path="echo"} 42
+# TYPE socketflow_request_duration_seconds histogram
+socketflow_request_duration_seconds_sum{path="echo"} 1.764
+socketflow_request_duration_seconds_count{path="echo"} 42
+socketflow_request_duration_seconds_bucket{le="0.001",path="echo"} 0
+socketflow_request_duration_seconds_bucket{le="0.01",path="echo"} 38
+...
+```
+
+---
+
+### `reset()`
+
+Clears all counters, gauges, and histograms. Useful in tests between runs.
+
+```python
+server.metrics.reset()
+```
+
+---
+
+## Built-in Metrics
+
+The following metrics are recorded automatically by `TcpServer` and `TcpClient`.
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `connections_accepted_total` | counter | — | Clients that successfully connected |
+| `connections_rejected_total` | counter | — | Clients refused (auth failure, max connections, etc.) |
+| `connections_active` | gauge | — | Number of clients currently connected |
+| `messages_received_total` | counter | `path` | Messages received, grouped by handler path |
+| `messages_sent_total` | counter | — | Messages sent to clients or the server |
+| `bytes_sent_total` | counter | — | Total bytes written to all sockets |
+| `errors_total` | counter | `context` | Errors encountered, grouped by context string |
+| `backpressure_total` | counter | — | Number of times a queue was full and a write was rejected |
+| `request_duration_seconds` | histogram | `path` | End-to-end handler duration in seconds |
+
+---
+
+## Prometheus Scrape Endpoint
+
+`metrics_text()` (which calls `registry.prometheus()` internally) already produces valid Prometheus text format. Expose it over HTTP using the standard library's `http.server`:
+
+```python
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from socketflow import TcpServer
+
+server = TcpServer(host="0.0.0.0", port=8080)
+server.start()
+
+class MetricsHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = server.metrics_text().encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; version=0.0.4")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass  # silence default HTTP access log
+
+metrics_server = HTTPServer(("0.0.0.0", 9090), MetricsHandler)
+metrics_server.serve_forever()
+```
+
+Add a scrape config to `prometheus.yml`:
+
+```yaml
+scrape_configs:
+  - job_name: socketflow
+    static_configs:
+      - targets: ["your-host:9090"]
+```
+
+Example scraped output:
+
+```
+socketflow_connections_accepted_total 1
+socketflow_connections_active 1
+socketflow_messages_received_total{path="echo"} 4
+```
+
+---
+
+<Warning>
+Labels create one time series per unique value. If you label metrics with high-cardinality data — a `data_id`, a raw socket address, or a URL that embeds a user ID — your metrics table will grow without bound and can degrade server performance. Always label with small, bounded values such as `path`, `reason`, or `status`. SocketFlow itself only labels by `path` and `context`, so this risk only applies when you add custom labels.
+</Warning>

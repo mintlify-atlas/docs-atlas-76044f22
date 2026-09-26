@@ -1,0 +1,150 @@
+---
+title: "Non-Blocking Requests with send_async and RequestHandle"
+sidebarTitle: "Async Requests"
+description: "Use send_async() to fire off requests without blocking the calling thread. RequestHandle lets you poll, await, cancel, and chain callbacks on every in-flight request."
+---
+
+`send()` with `wait_response=True` blocks the calling thread until the server replies or the timeout expires. `send_async()` returns a `RequestHandle` immediately — the calling thread is free to do other work while the reply travels over the wire. Both client and server support the async pattern.
+
+## RequestHandle API
+
+Every `send_async()` call returns a `RequestHandle`. The handle exposes a small future-like interface:
+
+| Method / Attribute | Description |
+|---|---|
+| `done()` | Returns `True` when the request has a result, an exception, or has been cancelled. |
+| `result(timeout=None)` | Block until the response arrives, or until `timeout` seconds elapse. Raises `NoResponse` on timeout. |
+| `exception(timeout=None)` | Like `result()` but returns the exception instead of raising it. |
+| `cancel()` | Cancel the request and remove it from `pending_responses`. Returns `True` if the cancel succeeded. |
+| `cancelled()` | Returns `True` if the request was cancelled. |
+| `add_done_callback(fn)` | Register a callable that receives the handle when it completes, errors, or is cancelled. |
+| `data_id` | The UUID string that identifies this request in the protocol. |
+
+## Basic Usage
+
+```python
+from socketflow import TcpClient
+
+client = TcpClient(host="127.0.0.1", port=8080)
+client.connect()
+
+# Returns immediately — no blocking
+request = client.send_async("Hello, Server!", path="echo", timeout=5.0)
+print("Sent, not waiting yet")
+
+# Check later without blocking
+if request.done():
+    print(request.result())
+```
+
+## Timeout Handling
+
+Pass a `timeout` to `result()` to wait at most that many seconds. If no reply arrives in time, `NoResponse` is raised.
+
+```python
+from socketflow.global_side.exceptions import ExceptionType
+
+request = client.send_async("ping", path="echo", timeout=5.0)
+
+try:
+    response = request.result(timeout=2)
+    print(f"Got reply: {response.data}")
+except ExceptionType.NoResponse:
+    print("Timed out after 2 seconds")
+```
+
+<Tip>
+The `timeout` passed to `send_async()` is the overall deadline for the request tracked in `pending_responses`. The `timeout` passed to `result()` is how long *this call* will block. Both can coexist: set a short `result()` timeout to check in periodically while the request is still alive.
+</Tip>
+
+## Callbacks
+
+Register a done callback to be notified when the request completes, without polling:
+
+```python
+def on_reply(handle):
+    if handle.cancelled():
+        print("Request was cancelled")
+    elif handle.exception() is not None:
+        print(f"Request failed: {handle.exception()}")
+    else:
+        print(f"Reply: {handle.result().data}")
+
+request = client.send_async("Hello!", path="echo")
+request.add_done_callback(on_reply)
+# on_reply is called from the reader thread when the reply arrives
+```
+
+<Note>
+Callbacks are invoked on the internal reader thread. Keep them short — hand off work to your own thread pool if you need to do significant processing.
+</Note>
+
+## Cancellation
+
+Call `cancel()` on a handle to give up on a request you no longer need. The request is removed from `pending_responses` immediately and the handle transitions to the cancelled state.
+
+```python
+request = client.send_async("query", path="slow-path", timeout=30.0)
+
+# Changed our mind — we don't need the result
+request.cancel()
+
+print(request.cancelled())  # True
+```
+
+## Server-Side Async Sends
+
+The server can push requests to specific clients and receive replies non-blocking too, using `send_client_async()`:
+
+```python
+@server.event(EventType.Server.CLIENT_CONNECT)
+def on_connect(data):
+    client_addr = data.client_addr
+
+    # Send to the client and get a handle
+    request = server.send_client_async(
+        client_addr,
+        "welcome",
+        path="push",
+        timeout=5.0,
+    )
+
+    def on_ack(handle):
+        if not handle.cancelled() and handle.exception() is None:
+            print(f"Client acknowledged: {handle.result().data}")
+
+    request.add_done_callback(on_ack)
+```
+
+Or block for a response when you need the reply inline:
+
+```python
+request = server.send_client_async(client_addr, "query", path="push")
+response = request.result(timeout=5)
+print(response.data)
+```
+
+## Pending Responses and Memory Management
+
+Every in-flight request lives in `pending_responses` until it either receives a reply, times out, or is cancelled. The default `timeout=30.0` keeps this set bounded automatically — expired requests are removed by the shared `TimeoutScheduler` thread (one per client/server, not one per request).
+
+```python
+# Bounded: request removed from pending_responses after 30 s
+request = client.send_async("hello", path="echo", timeout=30.0)
+```
+
+Using `timeout=None` means the request stays in `pending_responses` until the connection closes. This is appropriate only when a reply is genuinely optional:
+
+```python
+# Grows without bound while replies are missing
+request = client.send_async("fire-and-forget", path="notify", timeout=None)
+print(len(client.pending_responses))  # grows with every unanswered request
+```
+
+<Warning>
+Avoid `timeout=None` for normal request/reply patterns. Every unanswered request with `timeout=None` accumulates in `pending_responses` until the connection closes, consuming memory and preventing garbage collection of the associated data. Always set a finite timeout unless a reply is genuinely never expected.
+</Warning>
+
+<Note>
+`send(..., wait_response=True)` is built on the same `RequestHandle` mechanism internally — it simply calls `send_async()` and then blocks on `result()`. This means all the same timeout and cancellation mechanics apply.
+</Note>

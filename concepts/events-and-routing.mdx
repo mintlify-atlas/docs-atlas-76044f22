@@ -1,0 +1,241 @@
+---
+title: "Events and Path-Based Routing in SocketFlow"
+sidebarTitle: "Events & Routing"
+description: "Explore SocketFlow's event system and path-based routing — how to register handlers, use middleware, tune the dispatcher, and handle every event type."
+---
+
+SocketFlow uses an event-driven model for all application logic. Instead of polling a socket in your own loop, you register handler functions against event types or URL-style paths, and the library calls them for you as connections arrive and messages are received. The same `EventDispatcher` instance backs both `TcpServer` and `TcpClient`, so the patterns you learn for one transfer directly to the other.
+
+## The Event System
+
+### EventDispatcher
+
+Every `TcpServer` and `TcpClient` owns an `EventDispatcher`. When something interesting happens — a client connects, a message arrives, an error occurs — the dispatcher submits a task to its internal `ThreadPoolExecutor` and calls your registered handlers concurrently. The pool is bounded, so a slow handler cannot exhaust all system threads.
+
+You never construct an `EventDispatcher` directly; you interact with it through the `event()`, `path()`, and `register_blueprint()` methods on the server or client.
+
+### Registering event handlers
+
+Use the `@server.event(event_type)` or `@client.event(event_type)` decorator. The decorated function receives one argument: a typed data object whose fields depend on the event type.
+
+```python
+from socketflow import TcpServer, EventType
+
+server = TcpServer(host="127.0.0.1", port=8080)
+
+@server.event(EventType.Server.CLIENT_CONNECT)
+def on_connect(data):
+    print(f"New client: {data.client_addr}")
+
+@server.event(EventType.Global.ERROR)
+def on_error(data):
+    print(f"Error in {data.context}: {data.error}")
+```
+
+Multiple handlers may be registered for the same event — all are called in registration order.
+
+## Event Types and Data Objects
+
+<Tabs>
+  <Tab title="Server Events">
+    | Event Type | String Value | Data Object | Fires When |
+    |---|---|---|---|
+    | `EventType.Server.START` | `"server.start"` | `ServerStartData(host, port)` | `start()` succeeds and the acceptor thread launches |
+    | `EventType.Server.STOP` | `"server.stop"` | `ServerStopData(host, port)` | `stop()` or `shutdown()` completes |
+    | `EventType.Server.DRAINING` | `"server.draining"` | `ServerDrainData(host, port, connected_clients, reason)` | `drain()` begins — new connections are now refused |
+    | `EventType.Server.CLIENT_CONNECT` | `"server.client_connect"` | `ClientConnectData(client_addr, transport, client_identity)` | A client completes the handshake |
+    | `EventType.Server.CLIENT_DISCONNECT` | `"server.client_disconnect"` | `ClientDisconnectData(client_addr, transport, client_identity)` | A client's connection is lost |
+    | `EventType.Server.MESSAGE` | `"server.message"` | `MessageReceivedData(data, client_addr, data_id, direct_response, client_identity)` | A message arrives with no matching path handler |
+
+    ```python
+    from socketflow import EventType
+
+    @server.event(EventType.Server.START)
+    def on_start(data):
+        print(f"Listening on {data.host}:{data.port}")
+
+    @server.event(EventType.Server.DRAINING)
+    def on_draining(data):
+        print(f"Draining — {data.connected_clients} clients still connected")
+
+    @server.event(EventType.Server.CLIENT_CONNECT)
+    def on_client_connect(data):
+        # data.client_identity is the TLS certificate CN, or None
+        print(f"{data.client_addr} connected (identity={data.client_identity})")
+
+    @server.event(EventType.Server.CLIENT_DISCONNECT)
+    def on_client_disconnect(data):
+        print(f"{data.client_addr} disconnected")
+
+    @server.event(EventType.Server.MESSAGE)
+    def on_message(data):
+        # Catch-all for messages with no path
+        print(f"Unrouted message from {data.client_addr}: {data.data}")
+    ```
+  </Tab>
+
+  <Tab title="Client Events">
+    | Event Type | String Value | Data Object | Fires When |
+    |---|---|---|---|
+    | `EventType.Client.CONNECT` | `"client.connect"` | `ConnectData(server_addr, transport)` | `connect()` completes the handshake |
+    | `EventType.Client.DISCONNECT` | `"client.disconnect"` | `DisconnectData(server_addr, transport)` | The connection to the server is lost |
+    | `EventType.Client.MESSAGE` | `"client.message"` | `MessageReceivedData(data, server_addr, data_id, direct_response)` | A message arrives with no matching path handler |
+
+    ```python
+    from socketflow import TcpClient, EventType
+
+    client = TcpClient(host="127.0.0.1", port=8080)
+
+    @client.event(EventType.Client.CONNECT)
+    def on_connect(data):
+        print(f"Connected to {data.server_addr}")
+
+    @client.event(EventType.Client.DISCONNECT)
+    def on_disconnect(data):
+        print(f"Disconnected from {data.server_addr}")
+
+    @client.event(EventType.Client.MESSAGE)
+    def on_message(data):
+        print(f"From server: {data.data}")
+    ```
+  </Tab>
+
+  <Tab title="Global Events">
+    | Event Type | String Value | Data Object | Fires When |
+    |---|---|---|---|
+    | `EventType.Global.ERROR` | `"global.error"` | `ErrorData(error, context)` | Any internal error is detected |
+
+    `ErrorData.context` is a string like `"server.accept"`, `"client.receive"`, `"server.keepalive"`, or `"server.handle_data"` that identifies where the problem occurred.
+
+    ```python
+    from socketflow import EventType
+    from socketflow.global_side.exceptions import ExceptionType
+
+    @server.event(EventType.Global.ERROR)
+    def on_error(data):
+        if isinstance(data.error, ExceptionType.KeepaliveTimeout):
+            print(f"Client timed out ({data.context})")
+        elif isinstance(data.error, ExceptionType.Backpressure):
+            print(f"Queue full ({data.context}) — consider raising max_connections")
+        else:
+            print(f"Error in {data.context}: {data.error}")
+    ```
+  </Tab>
+</Tabs>
+
+## Path-Based Routing
+
+### How it works
+
+When a sender includes a `path` value in a message, the dispatcher performs a lookup against registered path handlers *before* falling back to the `MESSAGE` event. This lets you build structured request routing — like an HTTP router — on top of a raw TCP connection.
+
+On the sender side:
+
+```python
+# Client sending to a specific route
+client.send({"username": "alice", "password": "s3cr3t"}, path="/user/login")
+```
+
+On the receiver side, the message is delivered only to handlers registered for `/user/login`:
+
+```python
+@server.path("/user/login")
+def handle_login(data):
+    # data: MessageReceivedData
+    user = data.data.get("username")
+    server.send_client(data.client_addr, {"ok": True, "user": user})
+```
+
+### Path parameters
+
+Paths may contain `<name>` placeholders. Matched segments are extracted and passed as keyword arguments to your handler:
+
+```python
+@server.path("/room/<room_id>/message")
+def handle_room_message(data, room_id):
+    print(f"Message in room {room_id}: {data.data}")
+    server.send_client(data.client_addr, {"room": room_id, "ack": True})
+```
+
+The client sends:
+
+```python
+client.send({"text": "hello everyone"}, path="/room/lobby/message")
+# handler receives room_id="lobby"
+```
+
+### Middleware
+
+Pass a callable (or a list of callables) to `middleware` on `path()`. Middleware runs before the handler, in the order given. Each middleware function receives the current `MessageReceivedData` object and can:
+
+- **Return `None` or the data object** — processing continues.
+- **Return a modified data object** — the modified version is passed to subsequent middleware and the handler.
+- **Return `False` or raise an exception** — processing stops; the handler is never called.
+
+```python
+def require_auth(data):
+    """Reject messages from unauthenticated clients."""
+    token = data.data.get("token") if isinstance(data.data, dict) else None
+    if token != "secret":
+        return False   # stops processing
+    return data        # pass through unchanged
+
+def log_request(data):
+    """Log every request before it reaches the handler."""
+    print(f"Request on {data.client_addr}: {data.data}")
+    return data
+
+@server.path("/admin/action", middleware=[log_request, require_auth])
+def handle_admin(data):
+    server.send_client(data.client_addr, {"result": "ok"})
+```
+
+You can also pass a single middleware function instead of a list:
+
+```python
+@server.path("/protected", middleware=require_auth)
+def handle_protected(data):
+    pass
+```
+
+<Note>
+  Messages that arrive with a `path` for which no handler is registered — and
+  that match no parameterized pattern — are silently dropped. They do **not**
+  fall back to the `MESSAGE` event. Register a catch-all with
+  `@server.event(EventType.Server.MESSAGE)` for messages that have no path, and
+  ensure every path you send from the client has a corresponding handler on the
+  server (and vice versa).
+</Note>
+
+### Blocking mode
+
+Setting `block=True` on a path handler serializes dispatch per client. Concurrent messages for the same path from the same client are queued and processed one at a time — useful when a handler modifies shared state that must not be touched in parallel.
+
+```python
+@server.path("/order/submit", block=True)
+def handle_order(data):
+    # Only one call at a time per client, even if messages arrive in a burst
+    process_order(data.data)
+```
+
+## Dispatcher Concurrency
+
+Three parameters on `TcpServer` and `TcpClient` control how the dispatcher handles concurrent work:
+
+| Parameter | Default | Description |
+|---|---|---|
+| `max_dispatch_workers` | `32` | Maximum threads in the handler thread pool. |
+| `max_pending_tasks` | `1000` | Maximum tasks queued or running at once. When the ceiling is hit, new events are rejected with a `DispatcherError`. |
+| `dispatch_queue_timeout` | `1.0` s | How long to wait for a slot in the task queue before raising `DispatcherError`. |
+
+```python
+server = TcpServer(
+    host="0.0.0.0",
+    port=8080,
+    max_dispatch_workers=64,     # more concurrency for CPU-bound handlers
+    max_pending_tasks=2000,      # larger burst buffer
+    dispatch_queue_timeout=2.0,  # wait longer before giving up
+)
+```
+
+Increase `max_dispatch_workers` if your handlers are I/O-bound and you see `DispatcherError` under load. Increase `max_pending_tasks` if you receive short bursts of many messages faster than handlers can process them.

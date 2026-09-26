@@ -1,0 +1,562 @@
+---
+title: "TcpServer API Reference"
+sidebarTitle: "TcpServer"
+description: "Complete API reference for TcpServer — SocketFlow's zero-dependency TCP server with TLS, mutual auth, compression, keepalive, and path-based routing."
+---
+
+`TcpServer` is the core server class in SocketFlow. It binds a TCP socket, accepts client connections, and routes inbound messages to your event or path handlers. The server is zero-dependency — it uses only Python's standard library — and supports TLS, token or username/password authentication, zlib/lzma/bz2/gzip compression, keepalive probes, a shared memory budget, and Prometheus-compatible metrics out of the box.
+
+## Constructor Parameters
+
+### Connection
+
+<ParamField path="host" type="str" required={false}>
+  The IP address or hostname the server binds to. Default: `"127.0.0.1"`.
+</ParamField>
+
+<ParamField path="port" type="int" required={false}>
+  The TCP port the server listens on. Default: `8080`.
+</ParamField>
+
+<ParamField path="max_connections" type="int" required={false}>
+  Maximum number of concurrently accepted clients. New connections beyond this limit are refused immediately and counted in `connections_rejected_total`. Default: `1000`.
+</ParamField>
+
+### Keepalive
+
+<ParamField path="keepalive_interval" type="float" required={false}>
+  How often (in seconds) the server sends a ping probe to each client. Default: `30.0`.
+</ParamField>
+
+<ParamField path="keepalive_max_missed" type="int" required={false}>
+  Number of consecutive missed keepalives before the connection is considered dead and forcibly closed. Default: `3`.
+</ParamField>
+
+### Compression
+
+<ParamField path="compress" type="bool" required={false}>
+  Enable payload compression on outbound messages. Default: `True`.
+</ParamField>
+
+<ParamField path="compression_type" type="str" required={false}>
+  Codec to use. Built-in options: `"zlib"`, `"lzma"`, `"bz2"`, `"gzip"`. Optional extras (require `pip install socketflow[zstd]` or `[brotli]`): `"zstd"`, `"brotli"`. Default: `"zlib"`.
+</ParamField>
+
+<ParamField path="compression_level" type="int" required={false}>
+  Compression effort from `1` (fastest) to `9` (smallest). Default: `6`.
+</ParamField>
+
+### Buffers and Limits
+
+<ParamField path="recv_buffer_size" type="int" required={false}>
+  OS-level receive socket buffer size in bytes. Default: `65536`.
+</ParamField>
+
+<ParamField path="send_buffer_size" type="int" required={false}>
+  OS-level send socket buffer size in bytes. Default: `65536`.
+</ParamField>
+
+<ParamField path="max_frame_size" type="int" required={false}>
+  Maximum allowed size for a single inbound or outbound frame in bytes. Frames that exceed this limit raise `InvalidData`. Default: `8388608` (8 MB).
+</ParamField>
+
+<ParamField path="max_outbound_queue_bytes" type="int" required={false}>
+  Maximum bytes that may be queued for sending to a single client before backpressure is triggered. Default: `16777216` (16 MB).
+</ParamField>
+
+<ParamField path="max_pending_writes" type="int" required={false}>
+  Maximum number of outbound frames that may be queued per client. Exceeding this raises `Backpressure`. Default: `1000`.
+</ParamField>
+
+<ParamField path="max_memory_bytes" type="int" required={false}>
+  Shared memory budget across all connection receive buffers and outbound queues. When the budget is exhausted, `Backpressure` is raised. Default: `268435456` (256 MB).
+</ParamField>
+
+<ParamField path="max_decompressed_size" type="int" required={false}>
+  Maximum size a compressed payload may expand to after decompression. Larger payloads are rejected. Default: `16777216` (16 MB).
+</ParamField>
+
+### Dispatcher
+
+<ParamField path="max_dispatch_workers" type="int" required={false}>
+  Maximum number of worker threads used to run event and path handlers in parallel. Default: `32`.
+</ParamField>
+
+<ParamField path="max_pending_tasks" type="int" required={false}>
+  Maximum number of handler invocations that may be queued waiting for a free worker. Default: `1000`.
+</ParamField>
+
+<ParamField path="dispatch_queue_timeout" type="float" required={false}>
+  Seconds to wait for a worker slot before rejecting the task. Default: `1.0`.
+</ParamField>
+
+### TLS
+
+<ParamField path="tls_enabled" type="bool" required={false}>
+  Wrap every accepted connection with TLS. Requires `tls_certfile` and `tls_keyfile`. Default: `False`.
+</ParamField>
+
+<ParamField path="tls_certfile" type="str" required={false}>
+  Path to the server's TLS certificate file (PEM). Required when `tls_enabled=True`. Default: `None`.
+</ParamField>
+
+<ParamField path="tls_keyfile" type="str" required={false}>
+  Path to the server's TLS private key file (PEM). Required when `tls_enabled=True`. Default: `None`.
+</ParamField>
+
+<ParamField path="tls_client_ca" type="str" required={false}>
+  Path to the CA certificate file used to verify client certificates for mutual TLS. Required when `tls_require_client_cert=True`. Default: `None`.
+</ParamField>
+
+<ParamField path="tls_require_client_cert" type="bool" required={false}>
+  Reject clients that do not present a valid certificate signed by `tls_client_ca`. Requires `tls_enabled=True` and `tls_client_ca`. Default: `False`.
+</ParamField>
+
+<ParamField path="tls_handshake_timeout" type="float" required={false}>
+  Seconds allowed for the TLS handshake to complete. Default: `10.0`.
+</ParamField>
+
+### Auth
+
+<ParamField path="auth_enabled" type="bool" required={false}>
+  Require the authentication handshake. Automatically set to `True` when `auth_token` or `auth_username` is supplied. Default: `False`.
+</ParamField>
+
+<ParamField path="auth_token" type="str" required={false}>
+  Shared secret token. Clients must present this exact string. Mutually exclusive with `auth_username`/`auth_password`. Default: `None`.
+</ParamField>
+
+<ParamField path="auth_username" type="str" required={false}>
+  Username for credential-based authentication. Must be paired with `auth_password`. Mutually exclusive with `auth_token`. Default: `None`.
+</ParamField>
+
+<ParamField path="auth_password" type="str" required={false}>
+  Password paired with `auth_username`. Default: `None`.
+</ParamField>
+
+<ParamField path="auth_timeout" type="float" required={false}>
+  Seconds the server waits for a client to complete authentication before forcibly closing the connection. Default: `30.0`.
+</ParamField>
+
+<ParamField path="require_handshake" type="bool" required={false}>
+  Block all application messages until the security handshake (server-ready + auth + handshake-ok) has fully completed. Default: `True`.
+</ParamField>
+
+<ParamField path="handshake_timeout" type="float" required={false}>
+  Timeout in seconds for the full handshake sequence (TLS wrap + server-ready + auth). Falls back to `auth_timeout` when `None`. Default: `None`.
+</ParamField>
+
+### Protocol
+
+<ParamField path="protocol_version" type="int" required={false}>
+  Advertise and require exactly this protocol version. Clients speaking a different version are refused. When `None`, version negotiation is disabled. Default: `None`.
+</ParamField>
+
+<ParamField path="min_protocol_version" type="int" required={false}>
+  Lowest protocol version the server accepts. Use with `max_protocol_version` to accept a range. Default: `None`.
+</ParamField>
+
+<ParamField path="max_protocol_version" type="int" required={false}>
+  Highest protocol version the server accepts. `min_protocol_version` must not exceed this value. Default: `None`.
+</ParamField>
+
+### Other
+
+<ParamField path="allow_pickle" type="bool" required={false}>
+  Allow legacy pickle-serialized payloads. Only enable this for fully trusted, internal peers — pickle is unsafe with untrusted data. Default: `False`.
+</ParamField>
+
+<ParamField path="use_event_loop" type="bool" required={false}>
+  Use a shared `selectors`-based event loop for accepted connections instead of spawning one thread per connection. Application handlers still run in the bounded worker pool. Default: `True`.
+</ParamField>
+
+---
+
+## Methods
+
+### `start()`
+
+```python
+def start() -> None
+```
+
+Bind the socket, start the accept loop, and (when `use_event_loop=True`) launch the shared selector loop. Raises `NotConnected` if the server is already running. Emits `EventType.Server.START` on success.
+
+---
+
+### `stop(drain, drain_timeout)`
+
+```python
+def stop(drain: bool = False, drain_timeout: Optional[float] = 10.0) -> None
+```
+
+Stop accepting connections and close all client transports.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `drain` | `bool` | `False` | When `True`, calls `drain()` before closing so in-flight handlers finish. |
+| `drain_timeout` | `float \| None` | `10.0` | Seconds to wait during the drain phase. |
+
+<Note>
+  Use `shutdown()` instead when you want to permanently close the server and its dispatcher.
+  Use `stop()` when you need a restartable lifecycle and plan to call `start()` again.
+</Note>
+
+---
+
+### `drain(timeout, reason)`
+
+```python
+def drain(timeout: Optional[float] = 10.0, reason: str = "shutdown") -> bool
+```
+
+Stop accepting new clients, let running handlers finish, flush their queued replies to sockets, and return.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `timeout` | `float \| None` | `10.0` | Seconds to wait for all work to complete. `None` waits indefinitely. |
+| `reason` | `str` | `"shutdown"` | Passed to the `EventType.Server.DRAINING` event. |
+
+Returns `True` when everything completed cleanly, `False` when the timeout expired first.
+
+---
+
+### `shutdown(drain, drain_timeout)`
+
+```python
+def shutdown(drain: bool = True, drain_timeout: Optional[float] = 10.0) -> None
+```
+
+Permanently stop the server, its event dispatcher, and the timeout scheduler. Drains by default so replies are not lost.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `drain` | `bool` | `True` | Whether to drain in-flight work before stopping. |
+| `drain_timeout` | `float \| None` | `10.0` | Seconds allowed for draining. |
+
+---
+
+### `wait()`
+
+```python
+def wait() -> None
+```
+
+Block the calling thread until the server stops. Handles `KeyboardInterrupt` by calling `stop()` automatically.
+
+---
+
+### `start_and_wait()`
+
+```python
+def start_and_wait() -> None
+```
+
+Convenience wrapper — calls `start()` then `wait()`. Suitable for scripts that need a single blocking call to run a server until interrupted.
+
+---
+
+### `send_client(client_addr, data, data_id, path, wait_response, wait_response_timeout)`
+
+```python
+def send_client(
+    client_addr: tuple,
+    data: Any,
+    data_id: Optional[str] = None,
+    path: Optional[str] = None,
+    wait_response: bool = False,
+    wait_response_timeout: Optional[float] = 30.0,
+)
+```
+
+Send data to a connected client.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `client_addr` | `tuple` | — | The `(host, port)` tuple identifying the target client. |
+| `data` | `Any` | — | Payload to send. Compressed when `compress=True`. |
+| `data_id` | `str \| None` | `None` | Explicit message ID. A UUID is generated when `None`. |
+| `path` | `str \| None` | `None` | Route path the client uses to dispatch this message. |
+| `wait_response` | `bool` | `False` | When `True`, block until the client sends a reply or the timeout expires. |
+| `wait_response_timeout` | `float \| None` | `30.0` | Seconds to wait for a reply. |
+
+Returns the response payload when `wait_response=True`, otherwise `None`. Raises `NoResponse` on timeout and `NotConnected` if the client disconnects.
+
+---
+
+### `send_client_async(client_addr, data, data_id, path, timeout)`
+
+```python
+def send_client_async(
+    client_addr: tuple,
+    data: Any,
+    data_id: Optional[str] = None,
+    path: Optional[str] = None,
+    timeout: Optional[float] = 30.0,
+) -> RequestHandle
+```
+
+Send a request to a client without blocking and return a `RequestHandle` immediately.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `client_addr` | `tuple` | — | The `(host, port)` tuple identifying the target client. |
+| `data` | `Any` | — | Payload to send. |
+| `data_id` | `str \| None` | `None` | Explicit message ID. |
+| `path` | `str \| None` | `None` | Route path on the client side. |
+| `timeout` | `float \| None` | `30.0` | Seconds before `NoResponse` is raised on the handle. |
+
+Returns a `RequestHandle`. See the [RequestHandle API Reference](/api/request-handle) for full details.
+
+---
+
+### `disconnect_client(client_addr)`
+
+```python
+def disconnect_client(client_addr: tuple) -> None
+```
+
+Forcibly close and remove the connection for the given client address. Pending responses for that client are immediately failed with `NotConnected`.
+
+---
+
+### `get_connected_clients()`
+
+```python
+def get_connected_clients() -> int
+```
+
+Return the current number of connected clients as an integer.
+
+---
+
+### `get_client_identity(client_addr)`
+
+```python
+def get_client_identity(client_addr: tuple) -> Optional[str]
+```
+
+Return the certificate Common Name for a client that authenticated with mutual TLS, or `None` when the client has no verified certificate or the client address is unknown.
+
+---
+
+### `is_connected(client_addr)`
+
+```python
+def is_connected(client_addr: tuple) -> bool
+```
+
+Return `True` if the given client is currently connected.
+
+---
+
+### `event(event_type)`
+
+```python
+def event(event_type: str)
+```
+
+Decorator that registers a handler function for a named event. The event type is typically one of the `EventType.Server.*` or `EventType.Global.*` constants.
+
+```python
+@server.event(EventType.Server.CLIENT_CONNECT)
+def on_connect(data):
+    print(f"Client connected: {data.client_addr}")
+```
+
+---
+
+### `path(path, middleware)`
+
+```python
+def path(path: str, middleware=None, block: bool = False)
+```
+
+Decorator that registers a handler for messages sent to a specific path.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `path` | `str` | — | The route string, e.g. `"/user/login"`. |
+| `middleware` | `callable \| list \| None` | `None` | One callable or a list of callables invoked before the handler. |
+| `block` | `bool` | `False` | When `True`, the handler runs synchronously in the dispatcher. |
+
+```python
+@server.path("/echo")
+def handle_echo(data):
+    server.send_client(data.client_addr, data.data, data.data_id)
+```
+
+---
+
+### `register_blueprint(blueprint)`
+
+```python
+def register_blueprint(blueprint: Blueprint) -> None
+```
+
+Attach a `Blueprint` to this server. All event and path handlers defined on the blueprint are registered with the server's dispatcher, and the blueprint's `_server` reference is set so that `blueprint.send_client()` and related methods work.
+
+---
+
+### `metrics_snapshot()`
+
+```python
+def metrics_snapshot() -> dict
+```
+
+Return all recorded metrics as a plain nested `dict`. The structure is JSON-serialisable and suitable for programmatic inspection or export.
+
+---
+
+### `metrics_text()`
+
+```python
+def metrics_text() -> str
+```
+
+Return all recorded metrics formatted as a Prometheus text exposition. Expose this over HTTP for Prometheus scraping.
+
+```python
+# Example: serve metrics on port 9090
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = server.metrics_text().encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; version=0.0.4")
+        self.end_headers()
+        self.wfile.write(body)
+```
+
+---
+
+## Properties
+
+### `draining`
+
+```python
+@property
+def draining(self) -> bool
+```
+
+`True` while a `drain()` call is in progress. New connections are refused when this is `True`.
+
+---
+
+### `metrics`
+
+```python
+@property
+def metrics(self) -> MetricsRegistry
+```
+
+The `MetricsRegistry` instance recording this server's counters, gauges, and histograms. Use `metrics.counter_value(...)` and `metrics.gauge_value(...)` for direct reads without converting to a full snapshot.
+
+---
+
+### `memory_used`
+
+```python
+@property
+def memory_used(self) -> int
+```
+
+Bytes currently reserved by the shared memory budget across all connection buffers and outbound queues.
+
+---
+
+### `memory_limit`
+
+```python
+@property
+def memory_limit(self) -> int
+```
+
+Maximum bytes allowed by the memory budget (the value passed as `max_memory_bytes`).
+
+---
+
+## Usage Examples
+
+### Minimal Server
+
+```python
+from socketflow import TcpServer, EventType
+
+server = TcpServer(host="0.0.0.0", port=8080)
+
+@server.event(EventType.Server.MESSAGE)
+def on_message(data):
+    print(f"Received from {data.client_addr}: {data.data}")
+
+server.start_and_wait()
+```
+
+### Server with Path Routing
+
+```python
+from socketflow import TcpServer, EventType
+
+server = TcpServer(host="0.0.0.0", port=8080)
+
+@server.event(EventType.Server.CLIENT_CONNECT)
+def on_connect(data):
+    print(f"Client {data.client_addr} connected")
+
+@server.event(EventType.Server.CLIENT_DISCONNECT)
+def on_disconnect(data):
+    print(f"Client {data.client_addr} disconnected")
+
+@server.path("/echo")
+def handle_echo(data):
+    # Reply to the client using the same data_id so the caller's
+    # wait_response=True is resolved.
+    server.send_client(data.client_addr, data.data, data_id=data.data_id)
+
+@server.path("/greet")
+def handle_greet(data):
+    server.send_client(
+        data.client_addr,
+        f"Hello, {data.data}!",
+        data_id=data.data_id,
+    )
+
+server.start_and_wait()
+```
+
+### Server with TLS and Token Auth
+
+```python
+from socketflow import TcpServer, EventType
+
+server = TcpServer(
+    host="0.0.0.0",
+    port=8443,
+    # TLS
+    tls_enabled=True,
+    tls_certfile="server.crt",
+    tls_keyfile="server.key",
+    # Auth
+    auth_token="super-secret-token",
+    auth_timeout=15.0,
+    # Mutual TLS (optional — omit tls_client_ca for one-way TLS)
+    tls_client_ca="clients-ca.crt",
+    tls_require_client_cert=True,
+)
+
+@server.event(EventType.Server.CLIENT_CONNECT)
+def on_connect(data):
+    identity = server.get_client_identity(data.client_addr)
+    print(f"Authenticated client: {identity}")
+
+@server.path("/data")
+def handle_data(data):
+    server.send_client(data.client_addr, {"status": "ok"}, data_id=data.data_id)
+
+server.start()
+try:
+    server.wait()
+finally:
+    server.shutdown()
+```

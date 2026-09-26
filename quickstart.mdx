@@ -1,47 +1,148 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get Up and Running with SocketFlow in Five Minutes"
+sidebarTitle: "Quickstart"
+description: "Install SocketFlow and build a working TCP server and client from scratch in minutes, with event handlers, path routing, and response handling."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
-
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
-
-## Prerequisites
-
-Before you begin, you must have:
-
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
-
-## Get started
+This guide walks you through everything you need to send your first message with SocketFlow. By the end you will have a running TCP server that handles inbound messages and echoes them back, a client that connects, sends a message, and receives the response, and a taste of path-based routing. Each step builds on the previous one, and every code block is ready to run as-is.
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
+
+  <Step title="Install SocketFlow">
+    SocketFlow is published on PyPI and has no required dependencies. Install it with pip:
 
     ```bash
-    npm install your-package
+    pip install socketflow
     ```
-  </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
 
-    ```bash
-    your-cli init
-    ```
+    That is all. No C extensions, no transitive packages — just the Python standard library.
   </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
 
-    ```bash
-    your-cli start
+  <Step title="Create a server">
+    Create a file called `server.py`. The server listens on `127.0.0.1:8080`, registers a handler for every inbound message, and blocks until you press Ctrl-C.
+
+    ```python
+    from socketflow import TcpServer, EventType
+
+    # Create the server
+    server = TcpServer(
+        host="127.0.0.1",
+        port=8080,
+        keepalive_interval=30.0,
+        keepalive_max_missed=3,
+        compress=True,
+    )
+
+    # Register a handler for every message that has no path
+    @server.event(EventType.Server.MESSAGE)
+    def handle_message(data):
+        print(f"Received: {data.data}")
+        return "Response from server"
+
+    # Start the server in the background, then block
+    server.start()
+    server.wait()  # Ctrl-C to stop
     ```
+
+    `server.start()` launches the acceptor thread and returns immediately. `server.wait()` blocks the main thread so the process stays alive. The handler receives a `MessageReceivedData` object — the payload your client sends is in `data.data`.
+
+    <Tip>
+      You can collapse both calls into one with `server.start_and_wait()`, which starts the server and then blocks — a handy shortcut for simple scripts.
+    </Tip>
   </Step>
+
+  <Step title="Connect a client">
+    Create a second file called `client.py`. The client connects to the server, sends a message, waits for the response, then disconnects cleanly.
+
+    ```python
+    from socketflow import TcpClient, EventType
+
+    # Create a client that mirrors the server's settings
+    client = TcpClient(
+        host="127.0.0.1",
+        port=8080,
+        keepalive_interval=30.0,
+        keepalive_max_missed=3,
+        compress=True,
+    )
+
+    # Register a handler for unsolicited server-to-client messages
+    @client.event(EventType.Client.MESSAGE)
+    def handle_message(data):
+        print(f"Server pushed: {data.data}")
+
+    # Connect — completes the security handshake automatically
+    client.connect()
+
+    # Send a message and wait for the server's return value
+    response = client.send("Hello, Server!", wait_response=True)
+    print(f"Server response: {response.data}")
+
+    # Clean up
+    client.disconnect()
+    ```
+
+    Run the server first, then the client in a second terminal. You should see `Received: Hello, Server!` in the server window and `Server response: Response from server` in the client window.
+  </Step>
+
+  <Step title="Add path-based routing">
+    Instead of a single catch-all handler, you can route messages to dedicated functions using URL-style paths. Update `server.py` to add an echo route:
+
+    ```python
+    from socketflow import TcpServer, EventType
+
+    server = TcpServer(host="127.0.0.1", port=8080, compress=True)
+
+    # Handles messages sent to the "/echo" path
+    @server.path("/echo")
+    def handle_echo(data):
+        print(f"Echo request: {data.data}")
+        return data.data  # Send the payload straight back
+
+    # Fallback for messages sent without any path
+    @server.event(EventType.Server.MESSAGE)
+    def handle_default(data):
+        print(f"Default handler: {data.data}")
+        return "ok"
+
+    server.start_and_wait()
+    ```
+
+    On the client side, pass `path="/echo"` to `send`:
+
+    ```python
+    from socketflow import TcpClient
+
+    client = TcpClient(host="127.0.0.1", port=8080, compress=True)
+    client.connect()
+
+    # This message is routed to the /echo handler
+    response = client.send("ping", path="/echo", wait_response=True)
+    print(f"Echo: {response.data}")  # Echo: ping
+
+    # This message falls through to the default handler
+    client.send("fire and forget")
+
+    client.disconnect()
+    ```
+
+    Path strings are arbitrary — choose whatever naming convention makes sense for your application.
+  </Step>
+
+  <Step title="Next steps">
+    You now have a working SocketFlow setup. Here are the natural places to go from here:
+
+    - **[Introduction](/introduction)** — understand the architecture, core components, and available features at a glance.
+    - **[Installation](/installation)** — add optional compression codecs (`zstd`, `brotli`) or install from source.
+
+    Key topics to explore next in the full documentation:
+
+    - **Blueprints** — group handlers into reusable modules with `Blueprint` and `server.register_blueprint(bp)`.
+    - **Async requests** — use `client.send_async(...)` for non-blocking fire-and-return-handle messaging.
+    - **TLS and mTLS** — encrypt every connection and optionally verify client certificates.
+    - **Authentication** — protect your server with `auth_token` or `auth_username`/`auth_password`.
+    - **Metrics** — query `server.metrics_text()` for Prometheus-format counters and gauges.
+    - **Graceful shutdown** — call `server.drain()` or `server.shutdown()` to finish in-flight work cleanly.
+  </Step>
+
 </Steps>
-
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
-
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
-</Tip>

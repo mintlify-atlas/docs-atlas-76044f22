@@ -1,0 +1,101 @@
+---
+title: "Installing SocketFlow into Your Python Environment"
+sidebarTitle: "Installation"
+description: "Install SocketFlow from PyPI, add optional compression extras, build from source, and verify your setup with a quick import check."
+---
+
+SocketFlow is distributed as a pure-Python package on PyPI. Because it has no required dependencies, a single `pip install` command is all you need to start building TCP servers and clients. This page covers the standard install, optional compression extras, building from source, and how to verify that everything is working.
+
+## Install from PyPI
+
+```bash
+pip install socketflow
+```
+
+That is the complete install for most projects. SocketFlow uses only Python's standard library (`socket`, `ssl`, `threading`, `selectors`, `zlib`, `lzma`, `bz2`, and a handful of others), so nothing else is downloaded.
+
+## Optional Compression Extras
+
+Four compression codecs are built in and always available: **zlib**, **lzma**, **bz2**, and **gzip**. Two additional codecs — zstandard and Brotli — are available as optional extras because they require third-party C extensions.
+
+<CodeGroup>
+
+```bash zstd
+# Adds zstandard (zstd) — very fast compression with excellent ratios.
+# Useful for high-throughput services where CPU cost matters.
+pip install socketflow[zstd]
+```
+
+```bash brotli
+# Adds Brotli — high compression ratio, lower speed than zstd.
+# Well-suited for compressing structured or text-heavy payloads.
+pip install socketflow[brotli]
+```
+
+```bash all
+# Adds both zstandard and Brotli in one command.
+pip install socketflow[all]
+```
+
+</CodeGroup>
+
+Once an extra is installed, enable it by passing `compression_type` when creating the server or client:
+
+```python
+from socketflow import TcpServer, TcpClient
+
+server = TcpServer(host="127.0.0.1", port=8080, compression_type="zstd")
+client = TcpClient(host="127.0.0.1", port=8080, compression_type="zstd")
+```
+
+If you specify a codec that is not installed, SocketFlow raises a clear error telling you exactly which extra to add rather than failing silently.
+
+## Install from Source
+
+To run the latest development version, clone the repository and install it directly:
+
+```bash
+git clone https://github.com/ayammaximilian/socketflow.git
+cd socketflow
+pip install .
+```
+
+To include the optional extras from source:
+
+```bash
+pip install ".[all]"
+```
+
+## Verify the Installation
+
+Open a Python interpreter and confirm that the main public classes import without error:
+
+```python
+from socketflow import TcpServer, TcpClient, Blueprint
+
+print("SocketFlow is installed correctly.")
+```
+
+You can also check the installed version:
+
+```python
+import socketflow
+print(socketflow.__version__)  # e.g. 0.9.1
+```
+
+## Check Available Compression Methods
+
+To see which codecs are available in your current environment (including whether optional extras are installed), run:
+
+```python
+from socketflow.global_side.compression import MultiCompressor
+
+print(MultiCompressor.available_methods())
+# e.g. ['zlib', 'lzma', 'bz2', 'gzip', 'zstd', 'brotli']
+```
+
+Built-in codecs (`zlib`, `lzma`, `bz2`, `gzip`) are always present. `zstd` and `brotli` appear only when their respective extras are installed.
+
+<Note>
+  SocketFlow requires **Python 3.7 or later** and has **no required external dependencies**. The `zstd` and `brotli` extras add the `zstandard` and `Brotli` packages respectively, but neither is needed for standard operation. All other functionality — TLS, authentication, keepalive, path routing, blueprints, and metrics — is provided entirely by the Python standard library.
+</Note>

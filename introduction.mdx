@@ -1,0 +1,84 @@
+---
+title: "SocketFlow: TCP Networking for Python, Zero Dependencies"
+sidebarTitle: "Introduction"
+description: "Learn what SocketFlow is, why it was built, and how its core components fit together to deliver reliable, event-driven TCP networking in Python."
+---
+
+SocketFlow is a high-performance TCP networking library for Python that runs entirely on the standard library — no third-party packages required. It is built for developers who need reliable, bidirectional socket communication with production-grade features like TLS/mTLS, token authentication, path-based message routing, compression, and built-in metrics, all without pulling in an external dependency tree. Whether you are building a real-time data pipeline, an internal RPC layer, or a lightweight service mesh, SocketFlow gives you a clean, decorator-driven API that stays out of your way.
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card title="Zero Dependencies" icon="box" href="/installation">
+    Runs entirely on Python's standard library. Installing SocketFlow never pulls in anything else.
+  </Card>
+  <Card title="Bidirectional Keepalive" icon="heart-pulse" href="/quickstart">
+    Both client and server independently monitor connection health with configurable ping/pong intervals and OS-level TCP keepalive.
+  </Card>
+  <Card title="Path-Based Routing" icon="route" href="/quickstart">
+    Route messages to dedicated handler functions using URL-style paths, just like a web framework — on both server and client.
+  </Card>
+  <Card title="Blueprint System" icon="layer-group" href="/quickstart">
+    Organise handlers into reusable `Blueprint` objects and register them on any server or client, keeping large codebases modular.
+  </Card>
+  <Card title="TLS and Mutual TLS" icon="lock" href="/quickstart">
+    Encrypt connections with TLS 1.2+ and optionally require client certificates for full mutual authentication (mTLS).
+  </Card>
+  <Card title="Token and Password Auth" icon="key" href="/quickstart">
+    Protect every connection with a shared token or username/password pair. Authentication runs before any application message is accepted.
+  </Card>
+  <Card title="Compression" icon="file-zipper" href="/installation">
+    Built-in zlib, lzma, bz2, and gzip codecs, plus optional zstandard and Brotli via extras. The compressor negotiates transparently.
+  </Card>
+  <Card title="Async Requests and Metrics" icon="chart-line" href="/quickstart">
+    Non-blocking `send_async` returns a `RequestHandle` immediately. Per-server and per-client `MetricsRegistry` exports Prometheus-compatible text.
+  </Card>
+</CardGroup>
+
+## Architecture Overview
+
+SocketFlow is built around four cooperating objects:
+
+**`TcpServer`** binds to a TCP port, accepts connections up to a configurable `max_connections` limit, and manages a bounded worker pool for dispatching inbound messages to your handler functions. It emits lifecycle events (`SERVER_START`, `CLIENT_CONNECT`, `CLIENT_DISCONNECT`, and so on) and exposes methods like `send_client`, `drain`, and `shutdown` for controlled teardown.
+
+**`TcpClient`** opens a single TCP connection to a server, runs a background reader thread, and provides `send` and `send_async` for outbound messages. On connect it completes a security handshake automatically, handling TLS wrapping and authentication before your code ever sees the socket.
+
+**`EventDispatcher`** (internal) is the engine behind `server.event(...)`, `server.path(...)`, `client.event(...)`, and `client.path(...)`. Each decorator registers a callable that the dispatcher invokes in a thread-pool worker whenever a matching event or path message arrives. One dispatcher lives inside every `TcpServer` and `TcpClient`.
+
+**`Blueprint`** lets you define a collection of `@blueprint.path(...)` and `@blueprint.event(...)` handlers in isolation, then attach the whole group to a server or client with a single `register_blueprint` call. This mirrors the blueprint pattern from web frameworks and makes handler reuse straightforward.
+
+```
+┌──────────────────────────────────────┐
+│  TcpServer                           │
+│  ├── EventDispatcher                 │
+│  │   ├── event handlers              │
+│  │   ├── path handlers               │
+│  │   └── Blueprint handlers          │
+│  ├── TcpServerProtocol (per client)  │
+│  └── MetricsRegistry                 │
+└──────────────────────────────────────┘
+          TCP socket
+┌──────────────────────────────────────┐
+│  TcpClient                           │
+│  ├── EventDispatcher                 │
+│  │   ├── event handlers              │
+│  │   └── path handlers               │
+│  ├── TcpClientProtocol               │
+│  └── MetricsRegistry                 │
+└──────────────────────────────────────┘
+```
+
+<Note>
+  SocketFlow requires **Python 3.7 or later** and has **no external dependencies**. The core library uses only the Python standard library (`socket`, `ssl`, `threading`, `selectors`, and friends). Optional compression codecs (`zstandard`, `Brotli`) must be installed separately if you want them — see [Installation](/installation) for details.
+</Note>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Build a working server and client in under five minutes with step-by-step instructions.
+  </Card>
+  <Card title="Installation" icon="download" href="/installation">
+    Install from PyPI, add optional compression extras, or build from source.
+  </Card>
+</CardGroup>

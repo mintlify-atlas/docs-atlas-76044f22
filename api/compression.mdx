@@ -1,0 +1,251 @@
+---
+title: "MultiCompressor: Codec Reference and Serialization"
+sidebarTitle: "MultiCompressor"
+description: "Codec table, safe JSON serialization, pickle mode, and all MultiCompressor methods for compressing and decompressing SocketFlow payloads directly."
+---
+
+SocketFlow handles compression and decompression automatically for every message sent over a `TcpServer` or `TcpClient` connection. `MultiCompressor` is the underlying class that powers this — you can also use it directly when you need to compress or decompress data outside of a live connection, or when integrating SocketFlow's serialization format into your own pipeline.
+
+```python
+from socketflow.global_side.compression import MultiCompressor
+```
+
+---
+
+## Supported Codecs
+
+Four codecs are available with no extra dependencies. Two optional codecs are available through extras.
+
+| Codec | Max Level | Package | Install |
+|-------|-----------|---------|---------|
+| `zlib` | 9 | Standard library | Built in |
+| `gzip` | 9 | Standard library | Built in |
+| `lzma` | 9 | Standard library | Built in |
+| `bz2` | 9 | Standard library | Built in |
+| `zstd` | 22 | `zstandard` | `pip install socketflow[zstd]` |
+| `brotli` | 11 | `Brotli` | `pip install socketflow[brotli]` |
+
+The default codec used by `TcpServer` and `TcpClient` is `zlib` at level 6. Change it at construction time:
+
+```python
+from socketflow import TcpServer
+
+server = TcpServer(compression_type="zstd", compression_level=3)
+```
+
+---
+
+## `MultiCompressor.available_methods()`
+
+Returns a list of codec names that are currently usable on this machine. Codecs from the standard library are always present; optional codecs appear only when their package is installed.
+
+```python
+from socketflow.global_side.compression import MultiCompressor
+
+print(MultiCompressor.available_methods())
+# e.g. ['zstd', 'brotli', 'lzma', 'bz2', 'zlib', 'gzip']
+# or   ['lzma', 'bz2', 'zlib', 'gzip']  (without optional packages)
+```
+
+---
+
+## Object Compression
+
+These methods serialize a Python object before compressing it. The default serialization is safe JSON — no `pickle` is used unless you explicitly opt in.
+
+### `MultiCompressor.compress(obj, method, level, allow_pickle) -> bytes`
+
+Serializes `obj` to bytes and compresses the result. The output is self-describing: the codec name is prepended as an ASCII header separated by `:`, so `decompress()` always knows how to decode the data without extra metadata.
+
+<ParamField body="obj" type="Any" required>
+  The Python object to serialize and compress. Any JSON-serializable value is accepted
+  by default. `bytes` and `bytearray` values are base64-encoded transparently.
+</ParamField>
+
+<ParamField body="method" type="str" default='"zstd"'>
+  Codec name. Must be one of the values returned by `available_methods()`.
+</ParamField>
+
+<ParamField body="level" type="int | None" default="None">
+  Compression level. When `None`, the codec's maximum level is used. Valid ranges are
+  codec-dependent (see the table above).
+</ParamField>
+
+<ParamField body="allow_pickle" type="bool" default="false">
+  When `False` (the default), the object is serialized with safe JSON. When `True`,
+  Python's `pickle` module is used instead, which can represent arbitrary Python objects
+  but is **unsafe for untrusted input**.
+</ParamField>
+
+```python
+from socketflow.global_side.compression import MultiCompressor
+
+payload = {"user": "alice", "score": 42, "data": b"\x00\x01\x02"}
+
+compressed = MultiCompressor.compress(payload, method="zlib", level=6)
+print(type(compressed))  # <class 'bytes'>
+print(compressed[:10])   # b'zlib:x\x9c...'
+```
+
+---
+
+### `MultiCompressor.decompress(data, allow_pickle, max_output_size) -> Any`
+
+Decompresses `data` and deserializes the result back to a Python object.
+
+<ParamField body="data" type="bytes" required>
+  Bytes produced by `compress()`. The method header is read automatically.
+</ParamField>
+
+<ParamField body="allow_pickle" type="bool" default="false">
+  Must be `True` to accept pickle-serialized payloads. If the data was compressed with
+  `allow_pickle=True` but you call `decompress()` with `allow_pickle=False`, a
+  `ValueError` is raised.
+</ParamField>
+
+<ParamField body="max_output_size" type="int | None" default="None">
+  Maximum number of bytes the decompressed output may occupy. A `ValueError` is raised
+  if the decompressed size exceeds this limit. `None` means no limit.
+</ParamField>
+
+```python
+result = MultiCompressor.decompress(compressed)
+print(result)
+# {'user': 'alice', 'score': 42, 'data': b'\x00\x01\x02'}
+```
+
+---
+
+## Bytes Compression
+
+These methods operate on raw `bytes` with no serialization layer — useful for compressing binary data such as files or pre-encoded payloads.
+
+### `MultiCompressor.compress_bytes(data, method, level) -> bytes`
+
+Compresses raw bytes and prepends the codec header.
+
+<ParamField body="data" type="bytes" required>Raw bytes to compress.</ParamField>
+<ParamField body="method" type="str" default='"zstd"'>Codec name.</ParamField>
+<ParamField body="level" type="int | None" default="None">
+  Compression level. Defaults to the codec's maximum level when `None`.
+</ParamField>
+
+```python
+raw = b"A" * 10_000
+compressed = MultiCompressor.compress_bytes(raw, method="zlib", level=9)
+print(f"Compressed: {len(compressed)} bytes (from {len(raw)})")
+```
+
+---
+
+### `MultiCompressor.decompress_bytes(data, max_output_size) -> bytes`
+
+Decompresses bytes produced by `compress_bytes()`. Returns raw `bytes`.
+
+<ParamField body="data" type="bytes" required>
+  Bytes produced by `compress_bytes()`. The codec header is read automatically.
+</ParamField>
+
+<ParamField body="max_output_size" type="int | None" default="None">
+  Maximum decompressed size in bytes. A `ValueError` is raised if exceeded.
+</ParamField>
+
+```python
+original = MultiCompressor.decompress_bytes(compressed)
+print(len(original))  # 10000
+```
+
+---
+
+## Serialization Format
+
+By default `compress()` uses **safe JSON serialization**, not pickle. The wire payload is:
+
+```
+<codec>:<SAFE_PAYLOAD_MARKER><json-bytes>
+```
+
+where `SAFE_PAYLOAD_MARKER` is the ASCII prefix `socketflow-json:`. `decompress()` detects this prefix and routes accordingly.
+
+### `bytes` and `bytearray` values
+
+Pure JSON cannot represent binary data. SocketFlow transparently encodes `bytes` and `bytearray` values as base64 strings wrapped in a sentinel object:
+
+```json
+{"__socketflow_bytes__": "AAEC"}
+```
+
+`decompress()` automatically converts these back to `bytes`. Your application code never sees the wrapper.
+
+```python
+result = MultiCompressor.decompress(
+    MultiCompressor.compress({"img": b"\xff\xd8\xff"}, method="zlib")
+)
+print(result)
+# {'img': b'\xff\xd8\xff'}
+```
+
+### Pickle mode
+
+Pass `allow_pickle=True` to both `compress()` and `decompress()` when you need to transmit arbitrary Python objects (e.g. `numpy` arrays, custom classes) between two processes you control. The receiver must also opt in by calling `decompress(data, allow_pickle=True)`.
+
+```python
+import numpy as np
+
+arr = np.zeros((1000, 1000), dtype=float)
+
+compressed = MultiCompressor.compress(arr, method="lzma", allow_pickle=True)
+recovered = MultiCompressor.decompress(compressed, allow_pickle=True)
+```
+
+On a `TcpServer` or `TcpClient`, enable pickle with the `allow_pickle=True` constructor argument:
+
+```python
+from socketflow import TcpServer
+
+server = TcpServer(host="0.0.0.0", port=8080, allow_pickle=True)
+```
+
+<Warning>
+`allow_pickle=False` is the secure default. Pickle can execute **arbitrary Python code** during deserialization. Never enable `allow_pickle=True` for data received from untrusted peers — only use it between processes you fully control, over an encrypted and authenticated channel.
+</Warning>
+
+---
+
+## Usage with TcpServer and TcpClient
+
+`TcpServer` and `TcpClient` handle all compression automatically. You never need to call `MultiCompressor` directly in a normal application — just set `compression_type` and `compression_level` in the constructor and SocketFlow takes care of the rest.
+
+```python
+from socketflow import TcpServer, TcpClient
+
+server = TcpServer(
+    host="0.0.0.0",
+    port=8080,
+    compress=True,
+    compression_type="zstd",
+    compression_level=3,
+)
+
+client = TcpClient(
+    host="127.0.0.1",
+    port=8080,
+    compress=True,
+    compression_type="zstd",
+    compression_level=3,
+)
+```
+
+Use `MultiCompressor` directly when you need to pre-compress data, store compressed objects off-connection, or integrate SocketFlow's wire format into a non-SocketFlow pipeline.
+
+```python
+# Store a compressed snapshot to disk
+import pathlib
+
+snapshot = {"state": [1, 2, 3], "timestamp": 1700000000}
+blob = MultiCompressor.compress(snapshot, method="lzma", level=9)
+pathlib.Path("snapshot.lzma").write_bytes(blob)
+
+# Restore it later
+loaded = MultiCompressor.decompress(pathlib.Path("snapshot.lzma").read_bytes())
+```

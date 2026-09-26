@@ -1,0 +1,343 @@
+---
+title: "Blueprint API Reference"
+sidebarTitle: "Blueprint"
+description: "Complete API reference for Blueprint — SocketFlow's reusable handler module for grouping events, path routes, and send helpers across servers and clients."
+---
+
+`Blueprint` is SocketFlow's mechanism for organising event handlers and path routes into self-contained, reusable modules. Define your handlers once on a blueprint, then register the blueprint with any number of servers or clients. Once registered, a blueprint gains the same send, disconnect, and connectivity helpers as the host it was attached to, so your handler code never needs a direct reference to the server or client object.
+
+## Constructor
+
+```python
+Blueprint(name: str)
+```
+
+<ParamField path="name" type="str" required={true}>
+  A human-readable identifier for the blueprint, used for debugging. For example: `"user"`, `"notifications"`, or `"admin"`.
+</ParamField>
+
+```python
+from socketflow import Blueprint
+
+user_bp = Blueprint("user")
+```
+
+---
+
+## Decorator Methods
+
+### `event(event_type)`
+
+```python
+def event(self, event_type: str)
+```
+
+Decorator that registers a function as a handler for the given event type. The event type is typically one of the `EventType.Server.*`, `EventType.Client.*`, or `EventType.Global.*` constants.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `event_type` | `str` | The event name string, e.g. `EventType.Server.CLIENT_CONNECT`. |
+
+```python
+from socketflow import Blueprint, EventType
+
+user_bp = Blueprint("user")
+
+@user_bp.event(EventType.Server.CLIENT_CONNECT)
+def on_connect(data):
+    print(f"Client connected: {data.client_addr}")
+
+@user_bp.event(EventType.Global.ERROR)
+def on_error(data):
+    print(f"Error in {data.context}: {data.error}")
+```
+
+---
+
+### `path(path, middleware, block)`
+
+```python
+def path(self, path: str, middleware=None, block: bool = False)
+```
+
+Decorator that registers a function as a handler for messages routed to the given path.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `path` | `str` | — | Route string to match, e.g. `"/login"`. |
+| `middleware` | `callable \| list \| None` | `None` | One callable or a list of callables run before the handler on each invocation. |
+| `block` | `bool` | `False` | Run this handler synchronously in the dispatcher thread. |
+
+```python
+@user_bp.path("/login")
+def handle_login(data):
+    # data.data contains the payload from the sender
+    print(f"Login from {data.client_addr}: {data.data}")
+
+@user_bp.path("/register", middleware=[require_auth])
+def handle_register(data):
+    print(f"Register: {data.data}")
+```
+
+---
+
+## Register Methods
+
+### `register_event(event_type, handler)`
+
+```python
+def register_event(self, event_type: str, handler: Callable) -> None
+```
+
+Programmatically add an event handler without using the decorator syntax. Equivalent to `@blueprint.event(event_type)`.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `event_type` | `str` | The event name string. |
+| `handler` | `callable` | The function to call when the event is emitted. |
+
+```python
+def my_handler(data):
+    print(data)
+
+user_bp.register_event(EventType.Server.CLIENT_DISCONNECT, my_handler)
+```
+
+---
+
+### `register_path(path, handler, middleware, block)`
+
+```python
+def register_path(
+    self,
+    path: str,
+    handler: Callable,
+    middleware=None,
+    block: bool = False,
+) -> None
+```
+
+Programmatically add a path handler without using the decorator syntax. Equivalent to `@blueprint.path(path, middleware, block)`.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `path` | `str` | — | The route string. |
+| `handler` | `callable` | — | The function to invoke when a message arrives on this path. |
+| `middleware` | `callable \| list \| None` | `None` | Pre-handler middleware. |
+| `block` | `bool` | `False` | Run synchronously in the dispatcher thread. |
+
+---
+
+## Registration
+
+### `register_with_dispatcher(dispatcher)`
+
+```python
+def register_with_dispatcher(self, dispatcher: EventDispatcher) -> None
+```
+
+Transfer all accumulated event and path handlers to an `EventDispatcher`. This is called automatically by `server.register_blueprint(bp)` and `client.register_blueprint(bp)` — you should not need to call it directly.
+
+<Note>
+  Always register a blueprint with its server or client **before** the first message arrives.
+  Handlers added after registration are not automatically transferred to the dispatcher.
+</Note>
+
+---
+
+## Sending Methods
+
+These methods are available **only after the blueprint has been registered**. They delegate to the underlying server or client that the blueprint was attached to.
+
+<Note>
+  All send and disconnect methods raise `BlueprintError` if called before the blueprint is
+  registered with a server or client.
+</Note>
+
+### `send(data, data_id, path, wait_response, wait_response_timeout)`
+
+```python
+def send(
+    self,
+    data: Any,
+    data_id: Optional[str] = None,
+    path: Optional[str] = None,
+    wait_response: bool = False,
+    wait_response_timeout: Optional[float] = 30.0,
+)
+```
+
+Send a message from a **client-registered** blueprint to the server. Delegates to `client.send(...)`.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `data` | `Any` | — | Payload to send. |
+| `data_id` | `str \| None` | `None` | Explicit message ID. |
+| `path` | `str \| None` | `None` | Route path on the server side. |
+| `wait_response` | `bool` | `False` | Block until the server replies. |
+| `wait_response_timeout` | `float \| None` | `30.0` | Seconds to wait for a reply. |
+
+Raises `BlueprintError` when the blueprint is registered with a server, not a client.
+
+---
+
+### `send_async(data, data_id, path, timeout)`
+
+```python
+def send_async(
+    self,
+    data: Any,
+    data_id: Optional[str] = None,
+    path: Optional[str] = None,
+    timeout: Optional[float] = 30.0,
+) -> RequestHandle
+```
+
+Non-blocking send for a **client-registered** blueprint. Delegates to `client.send_async(...)` and returns a `RequestHandle`.
+
+---
+
+### `send_client(client_addr, data, data_id, path, wait_response, wait_response_timeout)`
+
+```python
+def send_client(
+    self,
+    client_addr: tuple,
+    data: Any,
+    data_id: Optional[str] = None,
+    path: Optional[str] = None,
+    wait_response: bool = False,
+    wait_response_timeout: Optional[float] = 30.0,
+)
+```
+
+Send a message to a specific connected client from a **server-registered** blueprint. Delegates to `server.send_client(...)`.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `client_addr` | `tuple` | — | The `(host, port)` identifying the target client. |
+| `data` | `Any` | — | Payload to send. |
+| `data_id` | `str \| None` | `None` | Explicit message ID. |
+| `path` | `str \| None` | `None` | Route path on the client side. |
+| `wait_response` | `bool` | `False` | Block until the client replies. |
+| `wait_response_timeout` | `float \| None` | `30.0` | Seconds to wait for a reply. |
+
+Raises `BlueprintError` when the blueprint is registered with a client, not a server.
+
+---
+
+### `send_client_async(client_addr, data, data_id, path, timeout)`
+
+```python
+def send_client_async(
+    self,
+    client_addr: tuple,
+    data: Any,
+    data_id: Optional[str] = None,
+    path: Optional[str] = None,
+    timeout: Optional[float] = 30.0,
+) -> RequestHandle
+```
+
+Non-blocking send to a client from a **server-registered** blueprint. Delegates to `server.send_client_async(...)` and returns a `RequestHandle`.
+
+---
+
+## Utility Methods
+
+### `is_connected(client_addr=None)`
+
+```python
+def is_connected(self, client_addr: tuple = None) -> bool
+```
+
+Check connection status.
+
+- When the blueprint is registered with a **client**: returns `client.is_connected()`. The `client_addr` parameter is ignored.
+- When the blueprint is registered with a **server**: returns `server.is_connected(client_addr)`. `client_addr` is **required** in this case; omitting it raises `BlueprintError`.
+
+Raises `BlueprintError` if the blueprint has not been registered.
+
+---
+
+### `disconnect()`
+
+```python
+def disconnect(self) -> None
+```
+
+Disconnect the underlying **client**. Delegates to `client.disconnect()`. Raises `BlueprintError` when called on a server-registered blueprint.
+
+---
+
+### `disconnect_client(client_addr)`
+
+```python
+def disconnect_client(self, client_addr: tuple) -> None
+```
+
+Forcibly close a specific connected client's connection. Delegates to `server.disconnect_client(client_addr)`. Raises `BlueprintError` when called on a client-registered blueprint.
+
+---
+
+## Complete Example
+
+```python
+from socketflow import Blueprint, TcpServer, TcpClient, EventType
+
+# ── Define a Blueprint ────────────────────────────────────────────────────────
+
+user_bp = Blueprint("user")
+
+@user_bp.event(EventType.Server.CLIENT_CONNECT)
+def on_connect(data):
+    print(f"[user_bp] client connected: {data.client_addr}")
+
+@user_bp.event(EventType.Server.CLIENT_DISCONNECT)
+def on_disconnect(data):
+    print(f"[user_bp] client disconnected: {data.client_addr}")
+
+@user_bp.path("/login")
+def handle_login(data):
+    username = data.data.get("username", "anonymous")
+    print(f"[user_bp] login from {data.client_addr}: {username}")
+    # Echo a welcome reply using the blueprint's send_client helper
+    user_bp.send_client(
+        data.client_addr,
+        {"welcome": True, "user": username},
+        data_id=data.data_id,
+    )
+
+@user_bp.path("/status")
+def handle_status(data):
+    connected = user_bp.is_connected(client_addr=data.client_addr)
+    user_bp.send_client(
+        data.client_addr,
+        {"online": connected},
+        data_id=data.data_id,
+    )
+
+# ── Register with Server ──────────────────────────────────────────────────────
+
+server = TcpServer(host="0.0.0.0", port=8080)
+server.register_blueprint(user_bp)   # handlers are now live
+server.start_and_wait()
+
+# ── Register with Client (same blueprint, different instance) ─────────────────
+
+client_bp = Blueprint("notifications")
+
+@client_bp.event(EventType.Client.DISCONNECT)
+def on_server_gone(data):
+    print("[client_bp] server disconnected")
+
+@client_bp.path("/push")
+def on_push(data):
+    print(f"[client_bp] server push: {data.data}")
+    # Acknowledge using the blueprint's send helper
+    client_bp.send({"ack": True}, data_id=data.data_id)
+
+client = TcpClient(host="127.0.0.1", port=8080)
+client.register_blueprint(client_bp)  # must register before connect
+client.connect()
+```

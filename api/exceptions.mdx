@@ -1,0 +1,365 @@
+---
+title: "SocketFlow Exceptions Reference"
+sidebarTitle: "Exceptions"
+description: "Every exception SocketFlow can raise, when it is raised, how to handle it, and try/except examples for the most commonly caught types."
+---
+
+SocketFlow raises typed exceptions so you can handle specific failure modes precisely. Every exception ultimately inherits from `SocketFlowException`, giving you a single broad catch when you need it. All exception classes are importable directly from the `socketflow` package.
+
+```python
+from socketflow import (
+    SocketFlowException,
+    NotConnected,
+    NoResponse,
+    ConnectionTimeout,
+    KeepaliveTimeout,
+    InvalidData,
+    ProtocolError,
+    ProtocolVersionError,
+    ServerError,
+    ClientError,
+    BlueprintError,
+    CompressionError,
+    MessageHandlerError,
+    DispatcherError,
+    Backpressure,
+    AuthenticationError,
+    HandshakeError,
+    TlsError,
+    ExceptionType,
+)
+```
+
+## Exception Hierarchy
+
+```
+SocketFlowException
+├── NotConnected
+├── NoResponse
+├── ConnectionTimeout
+├── ConnectionError
+├── KeepaliveTimeout
+├── InvalidData
+├── ProtocolError
+│   └── ProtocolVersionError
+├── ServerError
+├── ClientError
+├── BlueprintError
+├── CompressionError
+├── MessageHandlerError
+├── DispatcherError
+├── Backpressure
+├── AuthenticationError
+│   └── HandshakeError
+└── TlsError
+```
+
+---
+
+## Exception Details
+
+### `SocketFlowException`
+
+The base class for every exception in the library. Catch this type as a broad fallback to handle any SocketFlow error without specifying its exact kind.
+
+---
+
+### `NotConnected`
+
+**Raised when:** A method that requires an active connection (such as `client.send()` or `server.send_client()`) is called before a connection is established or after it has been closed.
+
+**What to do:** Check `client.is_connected()` before sending, or reconnect before retrying the operation.
+
+```python
+from socketflow import TcpClient, NotConnected
+
+client = TcpClient(host="127.0.0.1", port=8080)
+
+try:
+    client.send("hello")
+except NotConnected:
+    client.connect()
+    client.send("hello")
+```
+
+---
+
+### `NoResponse`
+
+**Raised when:** A `send(..., wait_response=True)` call or a `request.result()` call on a `RequestHandle` does not receive a reply within the configured timeout.
+
+**What to do:** Increase the timeout, check that the server-side handler actually returns a value, or use `send_async()` and handle the timeout explicitly.
+
+```python
+from socketflow import TcpClient, NoResponse
+
+client = TcpClient(host="127.0.0.1", port=8080)
+client.connect()
+
+try:
+    response = client.send("ping", wait_response=True)
+except NoResponse:
+    print("Server did not reply in time — retrying")
+```
+
+---
+
+### `ConnectionTimeout`
+
+**Raised when:** The TCP connection attempt to the server does not complete within `connection_timeout` seconds.
+
+**What to do:** Verify the server is reachable and the host/port are correct. Increase `connection_timeout` on the `TcpClient` if the network is slow.
+
+```python
+from socketflow import TcpClient, ConnectionTimeout
+
+client = TcpClient(host="10.0.0.1", port=9000, connection_timeout=5.0)
+
+try:
+    client.connect()
+except ConnectionTimeout:
+    print("Could not reach the server within 5 s")
+```
+
+---
+
+### `ConnectionError`
+
+**Raised when:** A general TCP-level connection error occurs that is not specifically a timeout.
+
+**What to do:** Inspect the exception message for details. Check network connectivity and server availability.
+
+---
+
+### `KeepaliveTimeout`
+
+**Raised when:** The remote peer misses more than `keepalive_max_missed` consecutive keepalive responses. The connection is considered dead and is closed.
+
+**What to do:** The connection is already gone by the time this fires; reconnect if needed. You will typically observe this via the `EventType.Global.ERROR` event rather than a `try/except`.
+
+---
+
+### `InvalidData`
+
+**Raised when:** Incoming data cannot be parsed — for example, the frame header is malformed or the decompressed payload is not valid JSON.
+
+**What to do:** Ensure both sides are using compatible protocol versions and that no middleware is corrupting the byte stream.
+
+---
+
+### `ProtocolError`
+
+**Raised when:** The wire protocol is violated in a way that is not specifically a version mismatch — for example, an unexpected message type or a malformed frame sequence.
+
+**What to do:** Check that both sides are running compatible versions of SocketFlow. Enable `logs.configure(level="DEBUG")` to capture the raw exchange.
+
+---
+
+### `ProtocolVersionError`
+
+*Inherits from `ProtocolError`.*
+
+**Raised when:** The client and server negotiate protocol versions and discover there is no overlap between their supported ranges. The connection is refused before any application traffic is exchanged.
+
+**What to do:** Align the `protocol_version`, `min_protocol_version`, and `max_protocol_version` settings on both sides, or widen one side's range to include the other.
+
+```python
+from socketflow import TcpClient, ProtocolVersionError
+
+client = TcpClient(host="127.0.0.1", port=8080, min_protocol_version=7, max_protocol_version=9)
+
+try:
+    client.connect()
+except ProtocolVersionError as exc:
+    print(f"Version mismatch: {exc}")
+    # e.g. "No common protocol version: client supports 7-9, server supports 1-1"
+```
+
+---
+
+### `ServerError`
+
+**Raised when:** An unexpected error occurs inside a server-side subsystem that does not fit a more specific category.
+
+**What to do:** Inspect the exception message and enable debug logging to gather more context.
+
+---
+
+### `ClientError`
+
+**Raised when:** An unexpected error occurs inside a client-side subsystem that does not fit a more specific category.
+
+**What to do:** Inspect the exception message and enable debug logging to gather more context.
+
+---
+
+### `BlueprintError`
+
+**Raised when:** A `Blueprint` is configured or registered incorrectly — for example, a duplicate path is registered or `register_blueprint()` is called after the server has started.
+
+**What to do:** Review blueprint registration order and ensure all path names are unique within a blueprint.
+
+---
+
+### `CompressionError`
+
+**Raised when:** Compressing or decompressing a payload fails. Common causes include a mismatched codec on the two sides, a corrupted frame, or an output that exceeds `max_decompressed_size`.
+
+**What to do:** Ensure both sides use the same `compression_type`. If you are calling `MultiCompressor` directly, verify the method and level are valid.
+
+---
+
+### `MessageHandlerError`
+
+**Raised when:** An exception propagates out of an application-level message handler or path handler and SocketFlow catches it internally.
+
+**What to do:** Wrap the body of your handlers in `try/except` to catch and log errors before they surface as `MessageHandlerError`.
+
+---
+
+### `DispatcherError`
+
+**Raised when:** The internal dispatcher's queue or lifecycle encounters a failure — for example, a task submission fails because the pool has already been shut down.
+
+**What to do:** Ensure you are not calling `send()` or other methods after `server.shutdown()` or `client.shutdown()`.
+
+---
+
+### `Backpressure`
+
+**Raised when:** An outbound write queue or the application handler dispatch queue is full. This protects the process from unbounded memory growth when a slow consumer cannot keep up.
+
+**What to do:** Slow down the producer, increase `max_pending_writes` / `max_outbound_queue_bytes` / `max_pending_tasks`, or drop non-critical messages when under load.
+
+```python
+from socketflow import TcpServer, Backpressure
+
+server = TcpServer(host="0.0.0.0", port=8080)
+server.start()
+
+try:
+    server.send_client(client_addr, large_payload)
+except Backpressure:
+    print("Client queue is full — skipping this update")
+```
+
+---
+
+### `AuthenticationError`
+
+**Raised when:** The authentication handshake fails because the client provided the wrong token, username, or password.
+
+**What to do:** Verify that `auth_token`, `auth_username`, and `auth_password` match on both client and server.
+
+```python
+from socketflow import TcpClient, AuthenticationError
+
+client = TcpClient(host="127.0.0.1", port=8080, auth_token="wrong-secret")
+
+try:
+    client.connect()
+except AuthenticationError:
+    print("Bad credentials — check your auth_token")
+```
+
+---
+
+### `HandshakeError`
+
+*Inherits from `AuthenticationError`.*
+
+**Raised when:** The low-level security handshake does not complete successfully — for example, the handshake times out or the server sends an unexpected handshake response.
+
+**What to do:** Increase `handshake_timeout` if the network is slow, and verify that `require_handshake` is consistent on both sides.
+
+```python
+from socketflow import TcpClient, HandshakeError
+
+client = TcpClient(host="127.0.0.1", port=8080, handshake_timeout=5.0)
+
+try:
+    client.connect()
+except HandshakeError as exc:
+    print(f"Handshake failed: {exc}")
+```
+
+---
+
+### `TlsError`
+
+**Raised when:** TLS setup or certificate verification fails — for example, an untrusted CA, an expired certificate, or a hostname mismatch.
+
+**What to do:** Verify that `tls_ca_certs` points to the correct CA bundle, that the server certificate has not expired, and that `tls_server_hostname` matches the `CN` or `SAN` in the server certificate.
+
+```python
+from socketflow import TcpClient, TlsError
+
+client = TcpClient(
+    host="server.example.com",
+    port=8443,
+    tls_enabled=True,
+    tls_ca_certs="ca.crt",
+    tls_server_hostname="server.example.com",
+)
+
+try:
+    client.connect()
+except TlsError as exc:
+    print(f"TLS failed: {exc}")
+```
+
+---
+
+## The `ExceptionType` Namespace
+
+All exceptions are also accessible through the `ExceptionType` namespace class, which is useful when you want to reference exceptions without importing each one individually.
+
+```python
+from socketflow import ExceptionType
+
+try:
+    client.send("hello")
+except ExceptionType.NotConnected:
+    client.connect()
+except ExceptionType.Backpressure:
+    print("Queue full")
+except ExceptionType.SocketFlow as exc:
+    print(f"Unexpected SocketFlow error: {exc}")
+```
+
+The following attributes are available on `ExceptionType`:
+
+| Attribute | Maps to |
+|-----------|---------|
+| `ExceptionType.SocketFlow` | `SocketFlowException` |
+| `ExceptionType.NotConnected` | `NotConnected` |
+| `ExceptionType.NoResponse` | `NoResponse` |
+| `ExceptionType.ConnectionTimeout` | `ConnectionTimeout` |
+| `ExceptionType.ConnectionError` | `ConnectionError` |
+| `ExceptionType.KeepaliveTimeout` | `KeepaliveTimeout` |
+| `ExceptionType.InvalidData` | `InvalidData` |
+| `ExceptionType.ProtocolError` | `ProtocolError` |
+| `ExceptionType.ProtocolVersionError` | `ProtocolVersionError` |
+| `ExceptionType.ServerError` | `ServerError` |
+| `ExceptionType.ClientError` | `ClientError` |
+| `ExceptionType.BlueprintError` | `BlueprintError` |
+| `ExceptionType.CompressionError` | `CompressionError` |
+| `ExceptionType.MessageHandlerError` | `MessageHandlerError` |
+| `ExceptionType.DispatcherError` | `DispatcherError` |
+| `ExceptionType.Backpressure` | `Backpressure` |
+| `ExceptionType.AuthenticationError` | `AuthenticationError` |
+| `ExceptionType.HandshakeError` | `HandshakeError` |
+| `ExceptionType.TlsError` | `TlsError` |
+
+<Tip>
+Catch `SocketFlowException` (or `ExceptionType.SocketFlow`) as a broad fallback at the top level of your application. This ensures that any SocketFlow error that slips past your specific handlers is still caught and logged rather than crashing the process.
+
+```python
+from socketflow import SocketFlowException
+
+try:
+    run_application()
+except SocketFlowException as exc:
+    logger.error("Unhandled SocketFlow error", error=str(exc))
+```
+</Tip>

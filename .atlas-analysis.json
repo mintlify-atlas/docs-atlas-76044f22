@@ -1,0 +1,172 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "SocketFlow",
+  "projectDescription": "A high-performance, zero-dependency Python TCP networking library with event-driven architecture, path-based routing, TLS/mTLS, compression, authentication, and Prometheus-compatible metrics.",
+  "theme": "luma",
+  "primaryColor": "#2563EB",
+  "lightColor": "#EFF6FF",
+  "darkColor": "#1E3A8A",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/server",
+              "concepts/client",
+              "concepts/events-and-routing",
+              "concepts/blueprints"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/authentication",
+              "guides/tls",
+              "guides/compression",
+              "guides/async-requests",
+              "guides/graceful-shutdown",
+              "guides/observability"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Classes",
+            "pages": [
+              "api/tcp-server",
+              "api/tcp-client",
+              "api/blueprint",
+              "api/request-handle"
+            ]
+          },
+          {
+            "group": "Events & Exceptions",
+            "pages": [
+              "api/event-types",
+              "api/exceptions"
+            ]
+          },
+          {
+            "group": "Utilities",
+            "pages": [
+              "api/logs",
+              "api/metrics",
+              "api/compression"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Zero external dependencies — runs on Python standard library only",
+    "Bidirectional keepalive at both application and TCP level",
+    "Path-based message routing with middleware support",
+    "Blueprint system for modular handler organization",
+    "TLS and mutual TLS (mTLS) with client certificate verification",
+    "Token and username/password authentication with handshake protocol",
+    "Multi-codec compression: zlib, lzma, bz2, gzip, zstd, brotli",
+    "Non-blocking async request/reply with RequestHandle and callbacks",
+    "Built-in structured logging and Prometheus-compatible metrics",
+    "Protocol version negotiation between client and server",
+    "Graceful drain/shutdown with in-flight handler completion",
+    "Backpressure controls via bounded outbound queues and dispatcher worker pools",
+    "Shared selector event loop for scalable server connections",
+    "Full type annotations for IDE support"
+  ],
+  "publicApiSurface": [
+    "TcpServer",
+    "TcpServer.start()",
+    "TcpServer.stop(drain, drain_timeout)",
+    "TcpServer.drain(timeout, reason)",
+    "TcpServer.shutdown(drain, drain_timeout)",
+    "TcpServer.send_client(client_addr, data, path, wait_response)",
+    "TcpServer.send_client_async(client_addr, data, path, timeout)",
+    "TcpServer.disconnect_client(client_addr)",
+    "TcpServer.get_connected_clients()",
+    "TcpServer.get_client_identity(client_addr)",
+    "TcpServer.metrics_snapshot()",
+    "TcpServer.metrics_text()",
+    "TcpServer.is_connected(client_addr)",
+    "TcpServer.event(event_type)",
+    "TcpServer.path(path, middleware)",
+    "TcpServer.register_blueprint(blueprint)",
+    "TcpServer.wait()",
+    "TcpServer.start_and_wait()",
+    "TcpServer.draining",
+    "TcpClient",
+    "TcpClient.connect()",
+    "TcpClient.disconnect()",
+    "TcpClient.shutdown()",
+    "TcpClient.send(data, path, wait_response)",
+    "TcpClient.send_async(data, path, timeout)",
+    "TcpClient.is_connected()",
+    "TcpClient.wait()",
+    "TcpClient.connect_and_wait()",
+    "TcpClient.event(event_type)",
+    "TcpClient.path(path, middleware)",
+    "TcpClient.register_blueprint(blueprint)",
+    "TcpClient.negotiated_protocol_version",
+    "Blueprint",
+    "Blueprint.event(event_type)",
+    "Blueprint.path(path, middleware)",
+    "Blueprint.send(data, path, wait_response)",
+    "Blueprint.send_client(client_addr, data, path, wait_response)",
+    "Blueprint.send_async(data, path, timeout)",
+    "Blueprint.send_client_async(client_addr, data, path, timeout)",
+    "RequestHandle.done()",
+    "RequestHandle.result(timeout)",
+    "RequestHandle.exception(timeout)",
+    "RequestHandle.cancel()",
+    "RequestHandle.cancelled()",
+    "RequestHandle.add_done_callback(fn)",
+    "RequestHandle.data_id",
+    "EventType.Server.START",
+    "EventType.Server.STOP",
+    "EventType.Server.DRAINING",
+    "EventType.Server.CLIENT_CONNECT",
+    "EventType.Server.CLIENT_DISCONNECT",
+    "EventType.Server.MESSAGE",
+    "EventType.Client.CONNECT",
+    "EventType.Client.DISCONNECT",
+    "EventType.Client.MESSAGE",
+    "EventType.Global.ERROR",
+    "logs.configure(level, json_output, sinks, max_message_length)",
+    "logs.get_logger(name)",
+    "logs.MemorySink",
+    "logs.CallbackSink",
+    "MetricsRegistry.counter_value(name, **labels)",
+    "MetricsRegistry.gauge_value(name, **labels)",
+    "MultiCompressor.available_methods()",
+    "MultiCompressor.compress(obj, method, level)",
+    "MultiCompressor.decompress(data)",
+    "SocketFlowException",
+    "NotConnected",
+    "NoResponse",
+    "ConnectionTimeout",
+    "KeepaliveTimeout",
+    "InvalidData",
+    "CompressionError",
+    "MessageHandlerError",
+    "DispatcherError",
+    "Backpressure",
+    "AuthenticationError",
+    "TlsError",
+    "HandshakeError",
+    "ProtocolVersionError"
+  ]
+}

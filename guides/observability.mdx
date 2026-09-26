@@ -1,0 +1,181 @@
+---
+title: "Logging and Metrics for SocketFlow Applications"
+sidebarTitle: "Observability"
+description: "SocketFlow ships structured logging and Prometheus-compatible metrics. Both are silent by default and require explicit configuration to produce any output."
+---
+
+SocketFlow ships structured logging and Prometheus-compatible metrics. Both are off by default — adding either one changes nothing in your application until you explicitly ask for output. This means you can deploy SocketFlow in an application that manages its own logging without any interference.
+
+## Logging
+
+### Enabling Logging
+
+Import `logs` from `socketflow` and call `configure()` once at startup:
+
+```python
+from socketflow import logs
+
+# Human-readable lines to stderr
+logs.configure(level="INFO")
+
+# One JSON object per line to stderr
+logs.configure(level="INFO", json_output=True)
+```
+
+A sample JSON log line looks like this:
+
+```json
+{"time": "2026-09-26T02:00:08.616Z", "level": "INFO", "logger": "socketflow.server",
+ "message": "client connected", "client_identity": "test-client", "active_clients": 1}
+```
+
+Every field is labeled, so you can filter, aggregate, and alert on structured values rather than parsing free text.
+
+### Log Levels
+
+| Level | Shows |
+|---|---|
+| `DEBUG` | Every message sent and received, keepalive ticks |
+| `INFO` | Connections, server start/stop, drain events |
+| `WARNING` | Rejected connections, unexpected disconnects |
+| `ERROR` | Handler failures, TLS errors, invalid frames |
+
+### Custom Sinks
+
+By default `configure()` writes to `stderr`. Pass a `sinks` list to send logs elsewhere:
+
+<CodeGroup>
+```python Memory sink (testing)
+from socketflow import logs
+
+sink = logs.MemorySink(limit=500)
+logs.configure(level="DEBUG", sinks=[sink])
+
+# Later, inspect captured records
+print(sink.messages())
+```
+
+```python Callback sink
+from socketflow import logs
+
+def my_handler(record):
+    # record.as_dict() gives a plain dict
+    print(record.level_name, record.message, record.fields)
+
+logs.configure(level="INFO", sinks=[logs.CallbackSink(my_handler)])
+```
+
+```python Silence logging
+from socketflow import logs
+
+# Pass an empty list to suppress all output
+logs.configure(level="DEBUG", sinks=[])
+```
+</CodeGroup>
+
+### Writing Your Own Logs
+
+Use the same structured logger inside your application code. Call `bind()` to attach fields that appear on every subsequent log line from that logger:
+
+```python
+from socketflow import logs
+
+log = logs.get_logger("my.app").bind(service="billing")
+
+log.info("charge accepted", order_id=123)
+# Produces: {"message": "charge accepted", "service": "billing", "order_id": 123, ...}
+
+log.error("charge failed", order_id=456, reason="card declined")
+```
+
+### Capping Long Values
+
+By default `message` and string fields are logged at full length. Set `max_message_length` to prevent a single huge value from flooding a sink:
+
+```python
+logs.configure(level="INFO", json_output=True, max_message_length=2000)
+```
+
+Fields longer than the limit are cut and annotated:
+
+```
+"message": "A very long value ... [truncated 48213 chars]"
+```
+
+<Note>
+SocketFlow logs metadata about messages — path, client identity, byte counts — never the payload itself. Sending a 2 MB object produces `{"message": "message received", "path": "echo"}`. Watch your own handlers: a `log.info(f"got {payload}")` in your code will happily log the full payload body.
+</Note>
+
+---
+
+## Metrics
+
+### Reading Metrics
+
+The `server.metrics` (and `client.metrics`) object is a `MetricsRegistry`. Read individual values or export everything at once:
+
+```python
+# Read a single counter (with optional label filter)
+print(server.metrics.counter_value("messages_received_total", path="echo"))
+
+# Read a gauge
+print(server.metrics.gauge_value("connections_active"))
+
+# All metrics as a nested dict (JSON-friendly)
+snapshot = server.metrics_snapshot()
+
+# All metrics in Prometheus text format
+text = server.metrics_text()
+print(text)
+```
+
+### Metrics Reference
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `connections_accepted_total` | counter | Clients that successfully connected |
+| `connections_rejected_total` | counter | Clients turned away (max_connections or bad TLS) |
+| `connections_active` | gauge | Clients connected right now |
+| `messages_received_total` | counter | Messages received, labeled by `path` |
+| `messages_sent_total` | counter | Messages sent to clients |
+| `bytes_sent_total` | counter | Raw bytes written to sockets |
+| `errors_total` | counter | Errors, labeled by `context` (e.g. `server.handle_data`) |
+| `backpressure_total` | counter | Rejections from full outbound queues or connection limits |
+
+### Prometheus Integration
+
+`server.metrics_text()` returns output that is already valid Prometheus exposition format. Expose it over HTTP with a minimal handler:
+
+```python
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from socketflow import TcpServer
+
+server = TcpServer(host="0.0.0.0", port=8080)
+server.start()
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = server.metrics_text().encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; version=0.0.4")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format, *args):
+        pass  # suppress HTTP server noise
+
+metrics_server = HTTPServer(("0.0.0.0", 9090), Handler)
+metrics_server.serve_forever()
+```
+
+Prometheus will then scrape `http://your-host:9090/` and see output like:
+
+```
+socketflow_connections_accepted_total 1
+socketflow_connections_active 1
+socketflow_messages_received_total{path="echo"} 4
+```
+
+<Warning>
+Labels create one time series per unique value. Never label with high-cardinality values like `data_id`, raw socket addresses, or full URLs containing record IDs — the metric set will grow without bound and can slow the server. SocketFlow itself labels only by `path` and `reason`, both of which are small bounded sets. Apply the same discipline to any custom labels you add.
+</Warning>

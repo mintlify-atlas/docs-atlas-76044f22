@@ -1,0 +1,269 @@
+---
+title: "Structured Logging with the SocketFlow logs Module"
+sidebarTitle: "Logs"
+description: "Configure SocketFlow's built-in structured logger: log levels, JSON output, memory and callback sinks, field binding, and message-length limits."
+---
+
+SocketFlow includes a structured logging module that emits records with labeled fields instead of plain free-text strings. It is **off by default** — no output is produced until you call `logs.configure()`. This keeps the library completely silent inside applications that manage their own logging.
+
+```python
+from socketflow import logs
+```
+
+---
+
+## `logs.configure()`
+
+Configures logging for the entire library. Call this once at application startup. Calling it again replaces the previous configuration.
+
+```python
+logs.configure(
+    level=logs.LogLevel.INFO,
+    json_output=True,
+)
+```
+
+<ParamField body="level" type="int | str" default="LogLevel.INFO">
+  Minimum severity to emit. Accepts a `LogLevel` constant (e.g. `LogLevel.DEBUG`) or a
+  case-insensitive string (`"debug"`, `"INFO"`, `"WARNING"`, `"ERROR"`).
+  Pass `LogLevel.OFF` or `None` to silence all output.
+</ParamField>
+
+<ParamField body="json_output" type="bool" default="false">
+  When `True`, each record is written as a single JSON object to stderr. When `False`
+  (the default), a human-readable single-line format is used instead.
+</ParamField>
+
+<ParamField body="sinks" type="list[LogSink] | None" default="None">
+  List of sink objects that receive every `LogRecord`. When `None` (the default),
+  a `StreamSink` writing to `stderr` is created automatically. Pass `sinks=[]` to
+  silence all output while still allowing `get_logger()` calls to succeed.
+</ParamField>
+
+<ParamField body="stream" type="TextIO | None" default="None">
+  Override the output stream used by the automatically-created `StreamSink`. Ignored
+  when `sinks` is provided explicitly.
+</ParamField>
+
+<ParamField body="max_message_length" type="int | None" default="None">
+  Maximum number of characters allowed in a `message` or any `str` field before
+  truncation. `None` means no limit. Must not be negative.
+</ParamField>
+
+---
+
+## `LogLevel` Constants
+
+`LogLevel` provides integer constants and a `name()` helper. Higher values mean higher severity.
+
+| Constant | Value | What is emitted |
+|----------|-------|-----------------|
+| `LogLevel.DEBUG` | `10` | Every internal event: message dispatch, keepalive pings, buffer activity |
+| `LogLevel.INFO` | `20` | Connections, disconnections, server start/stop, drain begin |
+| `LogLevel.WARNING` | `30` | Rejected connections, unexpected disconnects |
+| `LogLevel.ERROR` | `40` | Failures inside the runtime |
+| `LogLevel.CRITICAL` | `50` | Unrecoverable errors |
+| `LogLevel.OFF` | `100` | Suppress all output (default when `configure()` has not been called) |
+
+```python
+from socketflow import logs, LogLevel
+
+# Only show INFO and above
+logs.configure(level=LogLevel.INFO)
+
+# String form is also accepted
+logs.configure(level="warning")
+```
+
+---
+
+## Output Formats
+
+### Human-readable (default)
+
+```
+14:32:01 INFO     socketflow.server: client connected | client_identity='web-01' active_clients=3
+14:32:05 WARNING  socketflow.server: keepalive missed | client_addr=('10.0.0.4', 52100)
+```
+
+The format is: `HH:MM:SS LEVEL    logger_name: message | key=value key=value ...`
+
+### JSON (`json_output=True`)
+
+Each record is one JSON object per line, suitable for log shippers such as Filebeat, Fluentd, or Loki.
+
+```json
+{"level": "INFO", "logger": "socketflow.server", "message": "client connected", "time": "2026-09-26T14:32:01.042Z", "active_clients": 3, "client_identity": "web-01"}
+{"level": "WARNING", "logger": "socketflow.server", "message": "keepalive missed", "time": "2026-09-26T14:32:05.817Z", "client_addr": "('10.0.0.4', 52100)"}
+```
+
+```python
+logs.configure(level=logs.LogLevel.DEBUG, json_output=True)
+```
+
+---
+
+## Sinks
+
+A sink is any object with an `emit(record: LogRecord)` method. Three implementations are provided.
+
+### `StreamSink`
+
+The default sink. Writes formatted records to a stream (`stderr` by default).
+
+```python
+import sys
+from socketflow import logs
+
+# Write human-readable output to stdout instead of stderr
+logs.configure(
+    level=logs.LogLevel.INFO,
+    sinks=[logs.StreamSink(stream=sys.stdout, json_output=False)],
+)
+```
+
+### `MemorySink(limit=1000)`
+
+Keeps records in memory. Designed for tests — inspect `sink.records` or call `sink.messages()` to assert on log output.
+
+<ParamField body="limit" type="int" default="1000">
+  Maximum number of records to retain. Oldest records are dropped when the limit is exceeded.
+</ParamField>
+
+```python
+from socketflow import logs
+
+memory = logs.MemorySink(limit=500)
+logs.configure(level=logs.LogLevel.DEBUG, sinks=[memory])
+
+# ... run some code ...
+
+# Check what was logged
+print(memory.messages())                            # all messages
+print(memory.messages(level=logs.LogLevel.WARNING)) # WARNING and above only
+print(memory.records[-1].fields)                    # fields dict of last record
+```
+
+### `CallbackSink(fn)`
+
+Calls a Python function for every `LogRecord`. Use this to forward SocketFlow records into your own logging framework.
+
+<ParamField body="fn" type="callable">
+  A function that accepts a single `LogRecord` argument. Exceptions raised inside `fn`
+  are silently swallowed so logging never interrupts application code.
+</ParamField>
+
+```python
+import logging
+from socketflow import logs
+
+stdlib_log = logging.getLogger("socketflow")
+
+def forward(record: logs.LogRecord):
+    stdlib_log.log(record.level, record.message, extra=record.fields)
+
+logs.configure(level=logs.LogLevel.INFO, sinks=[logs.CallbackSink(forward)])
+```
+
+### Silencing output entirely
+
+Pass an empty list to disable all output while keeping the logging machinery active:
+
+```python
+logs.configure(level=logs.LogLevel.DEBUG, sinks=[])
+```
+
+---
+
+## `logs.get_logger(name)`
+
+Returns a named `Logger` instance. Loggers are cached — calling `get_logger()` with the same name twice returns the same object.
+
+<ParamField body="name" type="str" required>
+  Dot-separated logger name, e.g. `"my.app"` or `"billing.service"`.
+</ParamField>
+
+```python
+from socketflow import logs
+
+log = logs.get_logger("billing.service")
+log.info("charge accepted", order_id=42, amount=9.99)
+```
+
+---
+
+## `Logger` Methods
+
+Every `Logger` exposes the following emit methods. Each accepts a positional `message` argument and any number of keyword arguments that become structured fields on the record.
+
+```python
+log.debug("message", **fields)
+log.info("message", **fields)
+log.warning("message", **fields)
+log.error("message", **fields)
+log.critical("message", **fields)
+log.exception("message", error=exc, **fields)  # adds error_type and error fields
+```
+
+```python
+log = logs.get_logger("api")
+
+log.debug("request received", path="/echo", size=128)
+log.info("connection established", peer="10.0.0.2")
+log.warning("slow handler", path="/heavy", elapsed_ms=420)
+log.error("handler raised", path="/crash")
+log.exception("unexpected failure", error=exc, request_id="abc-123")
+```
+
+### `Logger.bind(**fields)`
+
+Returns a new `Logger` that always includes the given fields on every record it emits. The original logger is not modified.
+
+```python
+base = logs.get_logger("payments")
+req_log = base.bind(request_id="req-9f3a", user_id=77)
+
+req_log.info("checkout started")
+# → {"message": "checkout started", "request_id": "req-9f3a", "user_id": 77, ...}
+
+req_log.error("payment declined", reason="insufficient_funds")
+# → {"message": "payment declined", "request_id": "req-9f3a", "user_id": 77, "reason": "insufficient_funds", ...}
+```
+
+---
+
+## Message Truncation
+
+When `max_message_length` is set, any `message` string or `str` field value that exceeds the limit is cut and marked with a `[truncated N chars]` suffix. This prevents a single oversized value from flooding a sink.
+
+```python
+logs.configure(
+    level=logs.LogLevel.INFO,
+    json_output=True,
+    max_message_length=200,
+)
+```
+
+A field that is 5 000 characters long becomes:
+
+```
+"description": "Lorem ipsum ... [truncated 4800 chars]"
+```
+
+The limit is `None` by default — nothing is shortened unless you ask for it.
+
+---
+
+## Resetting the Logger
+
+Call `logs.reset()` to turn logging off and drop all sinks. This is mainly useful in test teardown.
+
+```python
+logs.reset()
+```
+
+---
+
+<Note>
+SocketFlow **never logs message payloads**. Sending a 4 MB object produces a record like `{"message": "message received", "path": "upload"}` — the actual data is not written anywhere. Be careful in your own handlers: `log.info(f"received {payload}")` will happily emit the full payload. Log identifiers and sizes, not bodies.
+</Note>

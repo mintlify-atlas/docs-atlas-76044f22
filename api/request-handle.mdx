@@ -1,0 +1,295 @@
+---
+title: "RequestHandle API Reference"
+sidebarTitle: "RequestHandle"
+description: "Complete API reference for RequestHandle — SocketFlow's future-like object returned by send_async() and send_client_async() for non-blocking requests."
+---
+
+`RequestHandle` is the future-like object returned by `send_async()` and `send_client_async()`. It represents a single in-flight request and lets you check whether a reply has arrived, wait for it with an optional timeout, attach a callback that fires when the handle settles, or cancel the request entirely. `RequestHandle` is intentionally lightweight: all pending handles share a single timer thread per client or server, so you can hold thousands of them simultaneously without spawning extra threads.
+
+## How to Obtain a Handle
+
+```python
+# From TcpClient
+handle = client.send_async(
+    data={"action": "echo", "value": 42},
+    path="/echo",
+    timeout=5.0,
+)
+
+# From TcpServer
+handle = server.send_client_async(
+    client_addr=client_addr,
+    data={"event": "push"},
+    path="/notifications",
+    timeout=10.0,
+)
+```
+
+Both calls return immediately. The request is registered in `pending_responses` before the frame is written to the socket, so a reply that arrives before `send_async` returns is handled correctly.
+
+---
+
+## Attributes
+
+### `data_id`
+
+```python
+data_id: str
+```
+
+The UUID assigned to this request. The same ID is embedded in the outbound frame header so the server (or client) can correlate the response. You can pass this ID explicitly via the `data_id` parameter on `send_async()`, or let SocketFlow generate a UUID automatically.
+
+---
+
+## Methods
+
+### `done()`
+
+```python
+def done(self) -> bool
+```
+
+Return `True` when the handle has a result, an exception, or has been cancelled — in other words, when the underlying future is settled. Checking `done()` never blocks.
+
+```python
+handle = client.send_async({"q": "ping"}, path="/health", timeout=5.0)
+
+# Poll without blocking
+if handle.done():
+    print("Already resolved:", handle.result().data)
+else:
+    print("Still waiting…")
+```
+
+---
+
+### `result(timeout=None)`
+
+```python
+def result(self, timeout: Optional[float] = None)
+```
+
+Block until the handle settles and return the `ResponseData` object (which has a `.data` attribute containing the payload). If the handle is already done, this returns immediately.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `timeout` | `float \| None` | `None` | Seconds to wait before raising. `None` waits indefinitely. |
+
+**Raises:**
+- `NoResponse` — The per-request timeout set in `send_async()` expired, or `timeout` passed to `result()` was exceeded.
+- `NotConnected` — The connection dropped before a reply arrived.
+- `concurrent.futures.CancelledError` — `cancel()` was called before a reply arrived.
+
+```python
+from socketflow.global_side.exceptions import ExceptionType
+
+handle = client.send_async({"q": "status"}, path="/status", timeout=10.0)
+
+try:
+    response = handle.result(timeout=5.0)
+    print("Status:", response.data)
+except ExceptionType.NoResponse:
+    print("No reply within 5 s")
+except ExceptionType.NotConnected:
+    print("Connection lost before reply arrived")
+```
+
+---
+
+### `exception(timeout=None)`
+
+```python
+def exception(self, timeout: Optional[float] = None)
+```
+
+Return the exception set on this handle, or `None` if the handle completed successfully. Blocks if the handle is not yet done.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `timeout` | `float \| None` | `None` | Seconds to wait. `None` waits indefinitely. |
+
+```python
+exc = handle.exception(timeout=5.0)
+if exc is not None:
+    print(f"Request failed: {exc}")
+```
+
+---
+
+### `cancel()`
+
+```python
+def cancel(self) -> bool
+```
+
+Cancel this request. The handle is removed from `pending_responses`, the internal timeout timer is cancelled, and the underlying future is marked cancelled. Returns `True` if the cancellation succeeded (i.e. the handle was not already done), `False` otherwise.
+
+After a successful cancellation, `cancelled()` returns `True` and calling `result()` raises `concurrent.futures.CancelledError`.
+
+```python
+handle = client.send_async({"q": "slow"}, path="/slow-op", timeout=30.0)
+
+# Give up immediately if something else takes priority
+if not handle.done():
+    handle.cancel()
+```
+
+---
+
+### `cancelled()`
+
+```python
+def cancelled(self) -> bool
+```
+
+Return `True` if `cancel()` was called and the cancellation was accepted by the underlying future.
+
+---
+
+### `add_done_callback(fn)`
+
+```python
+def add_done_callback(self, fn: Callable[["RequestHandle"], None]) -> None
+```
+
+Register a callback to be invoked when the handle settles. The callback receives the `RequestHandle` itself as its only argument and is called in the thread that settles the future (the reader thread or the timeout thread). If the handle is already done when this is called, the callback fires immediately in the calling thread.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `fn` | `callable` | A function that accepts one `RequestHandle` argument. |
+
+```python
+def on_reply(handle):
+    if handle.cancelled():
+        print("Request was cancelled")
+    else:
+        exc = handle.exception()
+        if exc:
+            print(f"Request failed: {exc}")
+        else:
+            print("Reply:", handle.result().data)
+
+handle = client.send_async({"action": "subscribe"}, path="/sub", timeout=10.0)
+handle.add_done_callback(on_reply)
+
+# The script can continue doing other work while the callback waits.
+```
+
+<Warning>
+  Do not call blocking operations (including `result()` with `timeout=None`) inside a
+  done callback — the callback runs in the I/O thread and blocking it will stall
+  message processing for the entire connection.
+</Warning>
+
+---
+
+## Request Lifecycle
+
+A `RequestHandle` moves through the following states from the moment it is created:
+
+1. **Registered** — `send_async()` registers the handle in `pending_responses` and schedules its timeout before writing the frame to the socket.
+2. **Sent** — The frame is queued in the outbound writer. The handle stays in `pending_responses` waiting for a reply.
+3. **Done** (one of three paths):
+   - **Reply arrives** — The reader thread matches the inbound frame's `data_id` to the handle, calls `set_result()`, and the timeout timer is cancelled. `done()` returns `True`, `result()` returns the `ResponseData` immediately.
+   - **Timeout expires** — The shared timer thread fires `_on_timeout()`, removes the handle from `pending_responses`, and sets `NoResponse` as the exception. `done()` returns `True`, `result()` raises `NoResponse`.
+   - **`cancel()` called** — The handle is removed from `pending_responses`, the timer is cancelled, and the future is cancelled. `done()` returns `True`, `cancelled()` returns `True`.
+
+---
+
+## Complete Examples
+
+### Basic Result
+
+```python
+from socketflow import TcpClient
+
+client = TcpClient(host="127.0.0.1", port=8080)
+client.connect()
+
+handle = client.send_async({"msg": "hello"}, path="/echo", timeout=5.0)
+
+# Block until done
+response = handle.result()
+print("Echo:", response.data)
+
+client.disconnect()
+```
+
+### Timeout Handling
+
+```python
+from socketflow import TcpClient
+from socketflow.global_side.exceptions import ExceptionType
+
+client = TcpClient(host="127.0.0.1", port=8080)
+client.connect()
+
+handle = client.send_async({"q": "slow"}, path="/slow", timeout=3.0)
+
+try:
+    response = handle.result()        # waits up to the 3 s timeout set above
+    print("Got:", response.data)
+except ExceptionType.NoResponse:
+    print("Server did not reply within 3 s")
+    handle.cancel()                   # clean up, even if already timed out
+except ExceptionType.NotConnected:
+    print("Disconnected before reply arrived")
+
+client.disconnect()
+```
+
+### Callback Pattern
+
+```python
+from socketflow import TcpClient
+
+client = TcpClient(host="127.0.0.1", port=8080)
+client.connect()
+
+results = []
+
+def on_done(handle):
+    if not handle.cancelled() and not handle.exception():
+        results.append(handle.result().data)
+
+for i in range(10):
+    h = client.send_async({"index": i}, path="/process", timeout=10.0)
+    h.add_done_callback(on_done)
+
+# Continue with other work while replies accumulate in results
+import time
+time.sleep(2)
+print("Collected so far:", results)
+
+client.disconnect()
+```
+
+### Cancellation
+
+```python
+from socketflow import TcpClient
+
+client = TcpClient(host="127.0.0.1", port=8080)
+client.connect()
+
+handle = client.send_async({"task": "long-running"}, path="/work", timeout=60.0)
+
+# Decide to give up after 1 s of local work
+import time
+time.sleep(1)
+
+if not handle.done():
+    cancelled = handle.cancel()
+    print("Cancelled:", cancelled)      # True
+    print("Is cancelled:", handle.cancelled())  # True
+
+client.disconnect()
+```
+
+<Warning>
+  Always set a `timeout` when calling `send_async()`. Using `timeout=None` means the
+  handle remains in `pending_responses` for the entire lifetime of the connection. If
+  the server never replies, `len(client.pending_responses)` grows with every unanswered
+  call. To enforce a hard ceiling, cancel unused handles explicitly or always supply a
+  timeout.
+</Warning>

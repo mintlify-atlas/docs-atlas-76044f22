@@ -1,0 +1,176 @@
+---
+title: "Secure Connections with TLS and Mutual TLS"
+sidebarTitle: "TLS"
+description: "Encrypt SocketFlow TCP connections with one-way TLS or mutual TLS, verify client certificates, and retrieve the authenticated client identity."
+---
+
+SocketFlow uses Python's built-in `ssl` module to encrypt connections. You can enable one-way TLS — where clients verify the server certificate — or mutual TLS (mTLS) where both sides present certificates. The minimum enforced TLS version is **TLS 1.2**. No third-party packages are required.
+
+## One-Way TLS
+
+In one-way TLS the server proves its identity and all traffic is encrypted. Clients verify the server certificate against a trusted CA file but do not present a certificate themselves.
+
+<CodeGroup>
+```python server.py
+from socketflow import TcpServer, EventType
+
+server = TcpServer(
+    host="0.0.0.0",
+    port=8443,
+    tls_enabled=True,
+    tls_certfile="server.crt",   # PEM certificate chain
+    tls_keyfile="server.key",    # PEM private key
+)
+
+@server.event(EventType.Server.MESSAGE)
+def handle_message(data):
+    print(f"Encrypted message: {data.data}")
+    return "ack"
+
+server.start()
+server.wait()
+```
+
+```python client.py
+from socketflow import TcpClient
+
+client = TcpClient(
+    host="server.example.com",
+    port=8443,
+    tls_enabled=True,
+    tls_ca_certs="ca.crt",                         # CA that signed server.crt
+    tls_server_hostname="server.example.com",       # name checked against CN/SAN
+)
+
+client.connect()
+client.send("hello over TLS")
+client.disconnect()
+```
+</CodeGroup>
+
+<Note>
+`tls_certfile` and `tls_keyfile` are both required on the server when `tls_enabled=True`. Providing only one raises a `ValueError` at construction time. Likewise, `tls_certfile` and `tls_keyfile` must be provided together on the client side when using mTLS.
+</Note>
+
+## Mutual TLS (mTLS)
+
+Mutual TLS requires clients to present a certificate signed by a trusted CA. The server can then identify exactly which client is talking to it, making it useful for service-to-service authentication.
+
+<Steps>
+  <Step title="Generate certificates">
+    Create a CA, sign a server certificate, and sign one or more client certificates with that same CA (or a separate client CA).
+  </Step>
+  <Step title="Configure the server">
+    Add `tls_client_ca` pointing to the CA file that signs client certificates. Set `tls_require_client_cert=True` to reject clients without a cert.
+
+    ```python
+    server = TcpServer(
+        host="0.0.0.0",
+        port=8443,
+        tls_enabled=True,
+        tls_certfile="server.crt",
+        tls_keyfile="server.key",
+        tls_client_ca="clients-ca.crt",       # CA that signs client certs
+        tls_require_client_cert=True,          # no cert → rejected
+    )
+    ```
+  </Step>
+  <Step title="Configure the client">
+    Add `tls_certfile` and `tls_keyfile` with the client's own certificate and private key.
+
+    ```python
+    client = TcpClient(
+        host="server.example.com",
+        port=8443,
+        tls_enabled=True,
+        tls_ca_certs="ca.crt",
+        tls_server_hostname="server.example.com",
+        tls_certfile="client.crt",             # presented to the server
+        tls_keyfile="client.key",
+    )
+    client.connect()
+    ```
+  </Step>
+</Steps>
+
+## Required vs Optional Client Certificates
+
+Use `tls_client_ca` alone when client certificates are optional (for mixed fleets), or combine it with `tls_require_client_cert=True` when every client must authenticate.
+
+| Configuration | No client cert | Bad/unverified cert |
+|---|---|---|
+| `tls_require_client_cert=True` | Rejected 🔒 | Rejected 🔒 |
+| `tls_client_ca` only (optional) | Allowed, `client_identity` is `None` | Rejected 🔒 |
+| No `tls_client_ca` | Normal one-way TLS | Normal one-way TLS |
+
+## Getting Client Identity
+
+After a successful mTLS handshake the server extracts the **Common Name (CN)** from the peer certificate and stores it as the client identity.
+
+<Tabs>
+  <Tab title="Inside a handler">
+    Path handlers and event handlers receive a `MessageReceivedData` object. The `client_identity` field carries the certificate CN, or `None` if no client certificate was presented.
+
+    ```python
+    @server.path("whoami")
+    def whoami(message):
+        # message.client_identity is the certificate CN, e.g. "laptop-07"
+        print(f"Request from: {message.client_identity}")
+        server.send_client(
+            message.client_addr,
+            message.client_identity,
+            message.data_id,
+        )
+
+    @server.event(EventType.Server.CLIENT_CONNECT)
+    def on_connect(data):
+        print(f"{data.client_identity} joined")
+    ```
+  </Tab>
+  <Tab title="Outside a handler">
+    Call `server.get_client_identity(client_addr)` at any time to look up the CN for a connected client.
+
+    ```python
+    identity = server.get_client_identity(client_addr)
+    # Returns "laptop-07" or None
+    print(f"Client identity: {identity}")
+    ```
+  </Tab>
+</Tabs>
+
+## TLS Handshake Timeout
+
+The `tls_handshake_timeout` parameter (default `10.0` s) controls how long the server waits for the TLS handshake to complete before closing the connection.
+
+```python
+server = TcpServer(
+    tls_enabled=True,
+    tls_certfile="server.crt",
+    tls_keyfile="server.key",
+    tls_handshake_timeout=5.0,   # fail TLS faster
+)
+```
+
+## Handling TlsError
+
+`TlsError` is raised when TLS setup or certificate verification fails. Catch it around `connect()` on the client, or listen for `EventType.Global.ERROR` on the server.
+
+```python
+from socketflow.global_side.exceptions import ExceptionType
+
+try:
+    client.connect()
+except ExceptionType.TlsError as error:
+    print(f"TLS failed: {error}")
+    # Typical causes:
+    #   - Certificate expired or not yet valid
+    #   - tls_server_hostname doesn't match the cert CN/SAN
+    #   - tls_ca_certs doesn't trust the server's CA
+    #   - Server requires a client cert that wasn't provided
+```
+
+On the server side, TLS errors during `accept()` are emitted as `EventType.Global.ERROR` events with context `"server.accept"`. The failing connection is closed; the server continues accepting new clients.
+
+<Warning>
+Certificates expire. If a server or client certificate expires, connections fail immediately with a `TlsError`. Plan certificate renewal before the expiry date and protect your CA private key — anyone who holds it can mint certificates your server will trust unconditionally.
+</Warning>

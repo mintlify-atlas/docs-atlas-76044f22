@@ -1,0 +1,314 @@
+---
+title: "TcpServer: Lifecycle, Routing, and Connection Management"
+sidebarTitle: "Server"
+description: "Learn how TcpServer manages the full lifecycle of a TCP server — from startup and connection handling to message routing, keepalive, and graceful shutdown."
+---
+
+`TcpServer` is the core server primitive in SocketFlow. It binds to a host and port, accepts incoming TCP connections, authenticates clients through a built-in handshake, dispatches inbound messages to your registered handlers, and sends replies back — all with zero external dependencies. The same class handles everything from single-client local servers to multi-thousand-connection production deployments by tuning a handful of constructor parameters.
+
+## Server Lifecycle
+
+A `TcpServer` moves through a well-defined sequence of states from creation to teardown.
+
+<Steps>
+  <Step title="Instantiate">
+    Create the server with your desired configuration. No socket is opened yet.
+
+    ```python
+    from socketflow import TcpServer
+
+    server = TcpServer(
+        host="0.0.0.0",
+        port=8080,
+        max_connections=500,
+        keepalive_interval=30.0,
+        keepalive_max_missed=3,
+        compress=True,
+    )
+    ```
+  </Step>
+
+  <Step title="Register handlers">
+    Attach event and path handlers before calling `start()`. Handlers registered after `start()` still work, but registering them first avoids a narrow race where a client connects before your handlers are live.
+
+    ```python
+    from socketflow import EventType
+
+    @server.event(EventType.Server.START)
+    def on_start(data):
+        print(f"Server listening on {data.host}:{data.port}")
+
+    @server.event(EventType.Server.MESSAGE)
+    def on_message(data):
+        print(f"Got message from {data.client_addr}: {data.data}")
+    ```
+  </Step>
+
+  <Step title="Start">
+    `start()` opens the listening socket, launches the acceptor thread, and emits `EventType.Server.START`. It returns immediately — the server runs in background threads.
+
+    ```python
+    server.start()
+    ```
+  </Step>
+
+  <Step title="Accept connections and handle messages">
+    The acceptor loop runs continuously. For each new client the server performs the protocol handshake (and optional authentication), then begins reading frames from that connection.
+  </Step>
+
+  <Step title="Stop or shut down">
+    When you are done, call `stop()` to close all connections (leaving the server restartable) or `shutdown()` to permanently tear everything down, including the dispatcher thread pool.
+
+    ```python
+    # Graceful stop with draining — let in-flight handlers finish first
+    server.stop(drain=True, drain_timeout=10.0)
+
+    # Permanent teardown
+    server.shutdown()
+    ```
+  </Step>
+</Steps>
+
+### Blocking convenience methods
+
+<Tip>
+  Use `start_and_wait()` when your main thread has nothing else to do. It calls
+  `start()` and then `wait()` in one line, blocking until the server stops or a
+  `KeyboardInterrupt` is received. If you need to run other code on the main
+  thread after starting the server, call `start()` alone and manage the blocking
+  yourself.
+
+  ```python
+  # One-liner for scripts and simple services
+  server.start_and_wait()
+
+  # Equivalent — useful when you need work between start and wait
+  server.start()
+  do_some_setup()
+  server.wait()
+  ```
+</Tip>
+
+### Draining
+
+Draining stops accepting new clients and waits for all running and queued handlers to finish, then flushes any replies those handlers produced before returning.
+
+```python
+# Stop accepting, finish in-flight work, then report success
+finished = server.drain(timeout=10.0)
+print("drained cleanly:", finished)  # True if all work finished in time
+```
+
+While draining:
+- New connections are refused immediately.
+- Existing clients remain connected until their handlers complete.
+- `server.draining` is `True` throughout the drain.
+
+`stop(drain=True)` and `shutdown()` both invoke draining internally.
+
+## Connection Management
+
+### Limiting concurrency
+
+`max_connections` (default `1000`) sets the maximum number of simultaneously accepted clients. When the ceiling is reached, new connections are closed immediately and a `Backpressure` error is emitted on `EventType.Global.ERROR`.
+
+```python
+server = TcpServer(
+    host="0.0.0.0",
+    port=8080,
+    max_connections=200,   # refuse a 201st client
+)
+```
+
+### Shared selector event loop vs per-client threads
+
+By default (`use_event_loop=True`) all accepted connections are registered with a single `selectors`-based event loop. This means SocketFlow needs only **one OS thread** to monitor all connected sockets for readability, regardless of how many clients are connected — a significant scaling improvement over the one-thread-per-client model.
+
+When `use_event_loop=False`, each accepted client gets its own reader thread. That model is simpler to reason about in low-connection environments but does not scale beyond a few hundred connections.
+
+```python
+# Default — shared selector loop (recommended for production)
+server = TcpServer(use_event_loop=True)
+
+# Per-client reader threads
+server = TcpServer(use_event_loop=False)
+```
+
+<Note>
+  Regardless of `use_event_loop`, application handlers are always dispatched
+  onto the bounded `EventDispatcher` thread pool — never executed inline on the
+  I/O thread. This keeps I/O latency low even when a handler is slow.
+</Note>
+
+### Inspecting connected clients
+
+```python
+# Count of active connections
+count = server.get_connected_clients()
+
+# Check a specific address
+if server.is_connected(client_addr):
+    print("still here")
+
+# Forcefully drop a client
+server.disconnect_client(client_addr)
+```
+
+## Handler Registration
+
+### Event handlers
+
+`@server.event(event_type)` registers a callable that is invoked whenever the given event fires. The callable receives a typed data object.
+
+```python
+from socketflow import EventType
+
+@server.event(EventType.Server.CLIENT_CONNECT)
+def on_connect(data):
+    # data: ClientConnectData
+    print(f"Client {data.client_addr} connected (identity={data.client_identity})")
+
+@server.event(EventType.Server.CLIENT_DISCONNECT)
+def on_disconnect(data):
+    # data: ClientDisconnectData
+    print(f"Client {data.client_addr} disconnected")
+
+@server.event(EventType.Server.MESSAGE)
+def on_message(data):
+    # data: MessageReceivedData
+    print(f"Received: {data.data} from {data.client_addr}")
+```
+
+### Path handlers
+
+`@server.path(path)` routes messages that arrive with a matching `path` header to your handler, bypassing the catch-all `MESSAGE` event. This is the primary routing mechanism for structured applications.
+
+```python
+@server.path("/user/login")
+def handle_login(data):
+    username = data.data.get("username")
+    server.send_client(data.client_addr, {"ok": True, "user": username})
+
+@server.path("/echo")
+def handle_echo(data):
+    server.send_client(data.client_addr, data.data)
+```
+
+Paths also support URL parameters using `<name>` placeholders:
+
+```python
+@server.path("/room/<room_id>/join")
+def handle_join(data, room_id):
+    print(f"Client joining room {room_id}")
+    server.send_client(data.client_addr, {"room": room_id, "joined": True})
+```
+
+## Sending to Clients
+
+### `send_client` — blocking send
+
+```python
+server.send_client(
+    client_addr: tuple,
+    data: Any,
+    data_id: Optional[str] = None,
+    path: Optional[str] = None,
+    wait_response: bool = False,
+    wait_response_timeout: Optional[float] = 30.0,
+)
+```
+
+Fire-and-forget (default) or request/reply when `wait_response=True`:
+
+```python
+# Fire and forget
+server.send_client(client_addr, {"type": "notification", "text": "Hello"})
+
+# With path routing
+server.send_client(client_addr, {"value": 42}, path="/dashboard/update")
+
+# Wait for the client to reply
+response = server.send_client(
+    client_addr,
+    {"question": "ping"},
+    wait_response=True,
+    wait_response_timeout=5.0,
+)
+print(response.data)   # ResponseData.data
+```
+
+### `send_client_async` — non-blocking send
+
+`send_client_async` returns a `RequestHandle` immediately. The calling thread is never blocked.
+
+```python
+server.send_client_async(
+    client_addr: tuple,
+    data: Any,
+    data_id: Optional[str] = None,
+    path: Optional[str] = None,
+    timeout: Optional[float] = 30.0,
+) -> RequestHandle
+```
+
+```python
+handle = server.send_client_async(client_addr, {"cmd": "reload"}, timeout=5.0)
+
+# Poll later
+if handle.done():
+    print("reply:", handle.result().data)
+
+# Or register a callback
+def on_reply(h):
+    print("got reply:", h.result().data)
+
+handle.add_done_callback(on_reply)
+
+# Cancel if no longer needed
+handle.cancel()
+```
+
+`RequestHandle` exposes: `done()`, `result(timeout=None)`, `exception(timeout=None)`, `cancel()`, `cancelled()`, `add_done_callback(fn)`, and the `data_id` attribute.
+
+## Keepalive
+
+SocketFlow implements keepalive at two independent layers.
+
+### TCP-level keepalive
+
+`SO_KEEPALIVE` is set on every accepted socket. The operating system sends TCP keepalive probes at the OS-configured interval to detect half-open connections before the application layer notices.
+
+### Application-level keepalive
+
+Every `keepalive_interval` seconds (default `30.0`) the server sends an application-level `__ping__` frame to the client. The client replies with a `__pong__`. If no response (or any other data) has been received within `keepalive_interval × keepalive_max_missed` seconds (default `30 × 3 = 90 s`), the server considers the connection dead, emits a `KeepaliveTimeout` error, and closes the transport.
+
+```python
+server = TcpServer(
+    keepalive_interval=20.0,    # probe every 20 seconds
+    keepalive_max_missed=4,     # disconnect after 80 seconds of silence
+)
+```
+
+## Stopping vs Shutting Down
+
+<Note>
+  `stop()` and `shutdown()` serve different purposes. `stop()` closes the
+  listening socket and all client connections, but leaves the `EventDispatcher`
+  thread pool alive. You can call `start()` again on the same `TcpServer`
+  instance to resume accepting connections — useful in test suites or
+  services that restart on demand. `shutdown()` additionally tears down the
+  dispatcher (calling `stop()` first), making the instance **permanently
+  unusable**. Always call `shutdown()` when the process is exiting and you are
+  done with the server for good.
+
+  ```python
+  # Restartable — dispatcher stays alive
+  server.stop()
+  # ... later ...
+  server.start()   # valid
+
+  # Permanent — dispatcher is destroyed
+  server.shutdown()
+  server.start()   # raises an error
+  ```
+</Note>

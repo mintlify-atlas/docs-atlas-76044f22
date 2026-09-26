@@ -1,0 +1,267 @@
+---
+title: "EventType Reference: All Server, Client, and Global Events"
+sidebarTitle: "EventType"
+description: "Complete reference for SocketFlow's EventType constants — every server, client, and global event string value with its data object and handler examples."
+---
+
+SocketFlow's event system uses string constants grouped under the `EventType` namespace. Register event handlers with the `@server.event()` or `@client.event()` decorators, passing the appropriate constant. Each handler receives a single typed data object whose fields describe the event that fired.
+
+## Server Events
+
+Server events fire on the `TcpServer` instance. Register them with `@server.event(EventType.Server.<NAME>)`.
+
+### `EventType.Server.START`
+
+**String value:** `"server.start"`
+
+Fired when the server has bound its socket and is ready to accept connections.
+
+**Data object:** `ServerStartData(host: str, port: int)`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `host` | `str` | The address the server is listening on |
+| `port` | `int` | The port the server is listening on |
+
+```python
+from socketflow import TcpServer, EventType
+
+server = TcpServer(host="0.0.0.0", port=8080)
+
+@server.event(EventType.Server.START)
+def on_start(data):
+    print(f"Server listening on {data.host}:{data.port}")
+
+server.start()
+```
+
+---
+
+### `EventType.Server.STOP`
+
+**String value:** `"server.stop"`
+
+Fired after the server has stopped accepting connections and all clients have been disconnected.
+
+**Data object:** `ServerStopData(host: str, port: int)`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `host` | `str` | The address the server was listening on |
+| `port` | `int` | The port the server was listening on |
+
+```python
+@server.event(EventType.Server.STOP)
+def on_stop(data):
+    print(f"Server on {data.host}:{data.port} has shut down")
+```
+
+---
+
+### `EventType.Server.DRAINING`
+
+**String value:** `"server.draining"`
+
+Fired when `server.drain()` or `server.stop(drain=True)` is called. The server stops accepting new connections but keeps existing clients alive while in-flight handlers finish.
+
+**Data object:** `ServerDrainData(host: str, port: int, connected_clients: int, reason: str)`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `host` | `str` | The server host |
+| `port` | `int` | The server port |
+| `connected_clients` | `int` | Number of clients still connected at drain start |
+| `reason` | `str` | Why the drain was triggered (default: `"shutdown"`) |
+
+```python
+@server.event(EventType.Server.DRAINING)
+def on_draining(data):
+    print(
+        f"Draining ({data.reason}): "
+        f"{data.connected_clients} client(s) still connected"
+    )
+```
+
+---
+
+### `EventType.Server.CLIENT_CONNECT`
+
+**String value:** `"server.client_connect"`
+
+Fired when a client completes the connection handshake and is ready to exchange messages.
+
+**Data object:** `ClientConnectData(client_addr: tuple[str, int], transport: Any, client_identity: str | None)`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `client_addr` | `tuple[str, int]` | `(ip, port)` of the connected client |
+| `transport` | `Any` | Low-level transport object for this connection |
+| `client_identity` | `str \| None` | TLS certificate common name when mutual TLS is used, otherwise `None` |
+
+```python
+@server.event(EventType.Server.CLIENT_CONNECT)
+def on_client_connect(data):
+    ip, port = data.client_addr
+    identity = data.client_identity or "anonymous"
+    print(f"Client {identity} connected from {ip}:{port}")
+```
+
+---
+
+### `EventType.Server.CLIENT_DISCONNECT`
+
+**String value:** `"server.client_disconnect"`
+
+Fired when a client disconnects, either cleanly or due to a network error.
+
+**Data object:** `ClientDisconnectData(client_addr: tuple[str, int], transport: Any, client_identity: str | None)`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `client_addr` | `tuple[str, int]` | `(ip, port)` of the disconnected client |
+| `transport` | `Any` | The transport that was closed |
+| `client_identity` | `str \| None` | TLS certificate common name, or `None` |
+
+```python
+@server.event(EventType.Server.CLIENT_DISCONNECT)
+def on_client_disconnect(data):
+    ip, port = data.client_addr
+    print(f"Client {ip}:{port} disconnected")
+```
+
+---
+
+### `EventType.Server.MESSAGE`
+
+**String value:** `"server.message"`
+
+Fired for every message received from any client that does not match a registered path handler.
+
+**Data object:** `MessageReceivedData`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `data` | `Any` | The deserialized message payload |
+| `client_addr` | `tuple[str, int] \| None` | `(ip, port)` of the sending client |
+| `data_id` | `str \| None` | Correlation ID; pass to `send_client()` to reply |
+| `params` | `dict[str, str]` | Path parameters extracted from a pattern route |
+| `direct_response` | `bool` | `True` if the sender is awaiting a reply |
+| `client_identity` | `str \| None` | TLS certificate common name, or `None` |
+
+```python
+@server.event(EventType.Server.MESSAGE)
+def on_message(data):
+    print(f"From {data.client_addr}: {data.data!r}")
+    if data.direct_response:
+        # Echo the payload back to the waiting client
+        return f"echo: {data.data}"
+```
+
+---
+
+## Client Events
+
+Client events fire on the `TcpClient` instance. Register them with `@client.event(EventType.Client.<NAME>)`.
+
+### `EventType.Client.CONNECT`
+
+**String value:** `"client.connect"`
+
+Fired when the client successfully connects to the server and completes the handshake.
+
+**Data object:** `ConnectData(server_addr: tuple[str, int], transport: Any)`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `server_addr` | `tuple[str, int]` | `(ip, port)` of the server |
+| `transport` | `Any` | Low-level transport for this connection |
+
+```python
+from socketflow import TcpClient, EventType
+
+client = TcpClient(host="127.0.0.1", port=8080)
+
+@client.event(EventType.Client.CONNECT)
+def on_connect(data):
+    host, port = data.server_addr
+    print(f"Connected to server at {host}:{port}")
+
+client.connect()
+```
+
+---
+
+### `EventType.Client.DISCONNECT`
+
+**String value:** `"client.disconnect"`
+
+Fired when the client disconnects from the server, either by calling `client.disconnect()` or due to a network failure.
+
+**Data object:** `DisconnectData(server_addr: tuple[str, int], transport: Any)`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `server_addr` | `tuple[str, int]` | `(ip, port)` of the server that was disconnected from |
+| `transport` | `Any` | The transport that was closed |
+
+```python
+@client.event(EventType.Client.DISCONNECT)
+def on_disconnect(data):
+    host, port = data.server_addr
+    print(f"Disconnected from {host}:{port}")
+```
+
+---
+
+### `EventType.Client.MESSAGE`
+
+**String value:** `"client.message"`
+
+Fired for every message received from the server that does not match a registered path handler.
+
+**Data object:** `MessageReceivedData`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `data` | `Any` | The deserialized message payload |
+| `server_addr` | `tuple[str, int] \| None` | `(ip, port)` of the server |
+| `data_id` | `str \| None` | Correlation ID for this message |
+| `params` | `dict[str, str]` | Path parameters extracted from a pattern route |
+| `direct_response` | `bool` | `True` if the server is awaiting a reply |
+
+```python
+@client.event(EventType.Client.MESSAGE)
+def on_message(data):
+    print(f"Server says: {data.data!r}")
+    if data.direct_response:
+        return "acknowledged"
+```
+
+---
+
+## Global Events
+
+Global events can be registered on either a server or a client instance and cover conditions that apply to both.
+
+### `EventType.Global.ERROR`
+
+**String value:** `"global.error"`
+
+Fired whenever an unhandled exception occurs inside the SocketFlow runtime — for example, during message dispatch, connection handling, or keepalive processing. Registering this event is the recommended way to observe internal errors without crashing the application.
+
+**Data object:** `ErrorData(error: Exception, context: str)`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `error` | `Exception` | The exception that was raised |
+| `context` | `str` | A dot-separated string identifying where the error occurred |
+
+```python
+@server.event(EventType.Global.ERROR)
+def on_error(data):
+    print(f"[{data.context}] {type(data.error).__name__}: {data.error}")
+```
+
+<Note>
+The `context` field is a short dot-separated string such as `"server.handle_data"`, `"client.receive"`, `"server.keepalive"`, or `"dispatcher.run"`. Use it to triage which part of the stack produced the error without needing a full traceback.
+</Note>
